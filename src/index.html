@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Stash pHash Inspector</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header>
+    <h1>Stash pHash Inspector</h1>
+    <p class="subtitle">Reproduces and visualizes Stash's video perceptual hash, stage by stage, entirely on your machine.</p>
+    <div class="header-actions">
+      <button id="add-videos">Add video files&hellip;</button>
+      <label class="advanced-toggle"><input type="checkbox" id="advanced-mode-toggle" /> Show technical details</label>
+    </div>
+  </header>
+
+  <main>
+    <section class="stage-section" id="frames-section">
+      <h2>1. Sample timestamps &amp; frames</h2>
+      <p class="hint">Each row is one video, scrolled horizontally in sample order. Rows scroll together, so the same position in each row is the same sample index &mdash; scroll any row to compare frame-for-frame. <strong>Click any frame</strong> to open a slider comparison against another loaded video at the source video's native resolution (a separate, unscaled screenshot at the same timestamp &mdash; only the collage stage below reflects the actual 160px-wide hash input).</p>
+      <div id="filmstrip-rows"></div>
+    </section>
+
+    <section class="stage-section" id="montage-section">
+      <h2>2. <span class="basic-only">Snapshot grid</span><span class="adv-only">Collages (montage)</span> &mdash; this is what actually gets hashed</h2>
+      <p class="hint">The exact 5&times;5, 160&thinsp;px-wide-tile pixels fed into the <span class="basic-only">fingerprint</span><span class="adv-only">hash</span>. Placed side by side for comparison. <strong>Click a <span class="basic-only">snapshot grid</span><span class="adv-only">collage</span></strong> to open a slider comparison against another loaded video's <span class="basic-only">snapshot grid</span><span class="adv-only">collage</span>, optionally overlaying which regions drove the <span class="basic-only">fingerprints</span><span class="adv-only">hashes</span> apart.</p>
+      <div id="montage-cards" class="side-by-side"></div>
+    </section>
+
+    <section class="stage-section" id="dct-section">
+      <h2>3. <span class="basic-only">Frequency patterns</span><span class="adv-only">DCT coefficients (top-left 8&times;8, low frequencies)</span></h2>
+      <p class="hint basic-only">Each cell represents a low-frequency pattern detected in the video. Warmer colors = stronger signal; 0/1 shows which side of average it falls on. <strong>Click a grid</strong> to see which patterns differ between two videos.</p>
+      <p class="hint adv-only">Warmer = larger magnitude. Each cell also shows whether it landed above (1) or below (0) the median. <strong>Click a grid</strong> to open a bit-level diff between two videos and see exactly which coefficients drove the hashes apart.</p>
+      <div id="dct-cards" class="side-by-side"></div>
+    </section>
+
+    <section class="stage-section" id="hash-section">
+      <h2>4. <span class="basic-only">Fingerprints</span><span class="adv-only">Resulting hashes</span></h2>
+      <div id="hash-cards" class="side-by-side"></div>
+    </section>
+
+    <section class="stage-section" id="comparison-section" hidden>
+      <h2>Comparison</h2>
+      <table id="comparison-table"></table>
+    </section>
+  </main>
+
+  <div id="modal-overlay" class="modal-overlay" hidden>
+    <div class="modal-box">
+      <div class="modal-header">
+        <h2 class="modal-title"></h2>
+        <button class="modal-close" type="button" aria-label="Close">&times;</button>
+      </div>
+      <div class="modal-body"></div>
+    </div>
+  </div>
+
+  <template id="filmstrip-row-template">
+    <div class="filmstrip-row">
+      <div class="row-label">
+        <strong class="video-name"></strong>
+        <span class="status"></span>
+      </div>
+      <div class="filmstrip"></div>
+    </div>
+  </template>
+
+  <template id="montage-card-template">
+    <div class="montage-card">
+      <h3 class="video-name"></h3>
+      <div class="montage-wrap"><canvas class="montage-canvas"></canvas></div>
+      <button class="save-montage" type="button">Save <span class="basic-only">snapshot grid</span><span class="adv-only">collage</span> as PNG&hellip;</button>
+    </div>
+  </template>
+
+  <template id="dct-card-template">
+    <div class="dct-card">
+      <h3 class="video-name"></h3>
+      <canvas class="dct-canvas" width="288" height="288"></canvas>
+    </div>
+  </template>
+
+  <template id="hash-card-template">
+    <div class="hash-card">
+      <h3 class="video-name"></h3>
+      <div class="hash-output">
+        <div><span class="label">hex</span><code class="hash-hex">&mdash;</code></div>
+        <div><span class="label">int64 (Stash column value)</span><code class="hash-int64">&mdash;</code></div>
+      </div>
+      <div class="golden-check">
+        <label>Compare against a known Stash <span class="basic-only">fingerprint</span><span class="adv-only">phash</span>: <input type="text" class="golden-input" placeholder="hex or int64" /></label>
+        <span class="golden-result"></span>
+      </div>
+    </div>
+  </template>
+
+  <script src="../shared/phash-core.js"></script>
+  <script src="renderer.js"></script>
+</body>
+</html>

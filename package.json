@@ -1,0 +1,65 @@
+{
+  "name": "stash-phash-inspector",
+  "version": "0.1.0",
+  "description": "Standalone tool to visualize and reproduce Stash's video perceptual hash algorithm",
+  "main": "main.js",
+  "private": true,
+  "packageManager": "pnpm@9.15.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Maista6969/stash-phash-inspector.git"
+  },
+  "scripts": {
+    "start": "electron . --no-sandbox",
+    "test": "for f in main.js preload.js src/*.js shared/*.js tools/*.js; do node --check \"$f\" || exit 1; done && echo 'syntax OK'",
+    "dist": "electron-builder --publish=never",
+    "release": "electron-builder --publish=always",
+    "web:build": "pnpm --filter stash-phash-inspector-web run build",
+    "web:start": "pnpm run web:build && pnpm dlx serve web/dist"
+  },
+  "devDependencies": {
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "optionalDependencies": {
+    "ffmpeg-static": "^5.2.0",
+    "ffprobe-static": "^3.1.0"
+  },
+  "build": {
+    "appId": "app.stash.phash-inspector",
+    "productName": "Stash pHash Inspector",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "src/**/*",
+      "shared/**/*",
+      "package.json",
+      "node_modules/ffmpeg-static/**/*",
+      "node_modules/ffprobe-static/**/*"
+    ],
+    "asarUnpack": [
+      "node_modules/ffmpeg-static/**/*",
+      "node_modules/ffprobe-static/**/*"
+    ],
+    "publish": {
+      "provider": "github",
+      "owner": "Maista6969",
+      "repo": "stash-phash-inspector"
+    },
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+    "linux": {
+      "target": ["AppImage"],
+      "category": "AudioVideo"
+    },
+    "mac": {
+      "target": ["zip"],
+      "category": "public.app-category.video"
+    },
+    "win": {
+      "target": ["portable"]
+    }
+  }
+}

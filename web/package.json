@@ -1,0 +1,13 @@
+{
+  "name": "stash-phash-inspector-web",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Browser build (GitHub Pages) of the Stash pHash Inspector, using ffmpeg.wasm instead of a native ffmpeg binary",
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "dependencies": {
+    "@ffmpeg/ffmpeg": "^0.12.10",
+    "@ffmpeg/core": "^0.12.6"
+  }
+}
