@@ -11,7 +11,8 @@
   },
   "scripts": {
     "start": "electron . --no-sandbox",
-    "test": "for f in main.js preload.js src/*.js shared/*.js tools/*.js; do node --check \"$f\" || exit 1; done && echo 'syntax OK'",
+    "test": "node --test \"test/**/*.test.js\"",
+    "stash-check": "node tools/stash-check.js",
     "dist": "electron-builder --publish=never",
     "release": "electron-builder --publish=always",
     "web:build": "pnpm --filter stash-phash-inspector-web run build",

@@ -116,4 +116,27 @@ async function extractFrame(inputPath, timeSeconds, { width } = {}) {
   return decodeBMP(bmpBuffer);
 }
 
-module.exports = { probeDuration, extractFrame };
+/**
+ * Which binaries are actually in use and what version they report. Stash
+ * downloads its own ffmpeg (6.1 at the time of writing), and swscale output
+ * can differ between ffmpeg versions, so when a hash doesn't match the
+ * first question is "which ffmpeg produced each side?".
+ */
+async function describeBinaries() {
+  async function describe(cmd) {
+    try {
+      const out = await run(cmd, ['-version']);
+      const first = out.toString().split('\n')[0];
+      const m = /version\s+(\S+)/.exec(first);
+      return { path: cmd, version: m ? m[1] : first.trim() };
+    } catch (err) {
+      return { path: cmd, version: `unavailable (${err.message.split('\n')[0]})` };
+    }
+  }
+  return {
+    ffmpeg: await describe(getFfmpegPath()),
+    ffprobe: await describe(getFfprobePath()),
+  };
+}
+
+module.exports = { probeDuration, extractFrame, describeBinaries };

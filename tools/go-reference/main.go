@@ -1,52 +1,80 @@
-// Optional gold-standard validator.
+// Gold-standard reference: computes the phash of one or more montage images
+// using the exact same Go libraries (and versions, see go.mod) that Stash
+// uses, so shared/phash-core.js can be checked against the real thing rather
+// than against its own understanding of it.
 //
-// This is NOT part of the Electron app -- it's a tiny standalone CLI that
-// uses the exact same libraries Stash does (goimagehash, nfnt/resize,
-// disintegration/imaging) to compute a phash straight from a montage PNG.
-// shared/phash-core.js has already been cross-validated against these same
-// libraries (see the README's "Fidelity notes"), so you shouldn't need this
-// for day-to-day use -- it's here for anyone who wants to double-check a
-// specific montage themselves, or re-verify after modifying phash-core.js.
+// Not part of the shipped app. Used to (re)generate test/fixtures/expected.json:
 //
-// Usage:
-//   go mod init phashref && go mod tidy
-//   go run . montage.png
+//	node test/fixtures/generate.js /tmp/fixtures
+//	cd tools/go-reference && go run . /tmp/fixtures/*.png > ../../test/fixtures/expected.json
 //
-// Pair it with the app's "save montage as PNG" export (or screenshot the
-// montage canvas) to get a matching PNG to feed in here.
+// or to check a single collage exported from the app's "Save collage as
+// PNG" button:
+//
+//	go run . montage.png
+//
+// Output is a JSON object keyed by the file's base name without extension.
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"image"
 	_ "image/png"
 	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
 
 	"github.com/corona10/goimagehash"
+	_ "golang.org/x/image/bmp"
 )
 
-func main() {
-	if len(os.Args) != 2 {
-		fmt.Fprintln(os.Stderr, "usage: go run . <montage.png>")
-		os.Exit(1)
-	}
+type result struct {
+	Hex string `json:"hex"`
+	// As a string: JSON numbers beyond 2^53 lose precision in JavaScript.
+	Int64 string `json:"int64"`
+}
 
-	f, err := os.Open(os.Args[1])
+func hashFile(path string) (result, error) {
+	f, err := os.Open(path)
 	if err != nil {
-		panic(err)
+		return result{}, err
 	}
 	defer f.Close()
 
 	img, _, err := image.Decode(f)
 	if err != nil {
-		panic(err)
+		return result{}, fmt.Errorf("decoding %s: %w", path, err)
 	}
 
 	hash, err := goimagehash.PerceptionHash(img)
 	if err != nil {
-		panic(err)
+		return result{}, err
+	}
+	return result{Hex: fmt.Sprintf("%016x", hash.GetHash()), Int64: strconv.FormatInt(int64(hash.GetHash()), 10)}, nil
+}
+
+func main() {
+	if len(os.Args) < 2 {
+		fmt.Fprintln(os.Stderr, "usage: go run . <image.png> [more.png ...]")
+		os.Exit(1)
 	}
 
-	fmt.Printf("hex:   %016x\n", hash.GetHash())
-	fmt.Printf("int64: %d\n", int64(hash.GetHash()))
+	out := map[string]result{}
+	for _, path := range os.Args[1:] {
+		r, err := hashFile(path)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		name := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+		out[name] = r
+	}
+
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(out); err != nil {
+		panic(err)
+	}
 }

@@ -31,8 +31,7 @@
               electron
               ffmpeg
               git
-              gdb
-              strace
+              go # only for tools/go-reference (golden-hash fixtures)
             ];
 
             shellHook = ''
@@ -63,8 +62,7 @@
               electron
               ffmpeg
               git
-              gdb
-              strace
+              go
 
               glib
               nss
