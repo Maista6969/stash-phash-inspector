@@ -43,38 +43,66 @@ function _serialized(fn) {
   return r;
 }
 
+// Same ffprobe invocation as src/ffmpeg-extract.js. ffmpeg.wasm routes
+// ffprobe's stdout through 'log' events (type 'stdout'), so collect those.
+// Earlier versions of this file scraped ffmpeg's "Duration: HH:MM:SS.cc"
+// banner instead, which is truncated to centiseconds rather than rounded,
+// and so could disagree with Stash's math.Round by 0.01s.
 async function _probeDuration(ff, name) {
-  let duration = null;
-  const handler = ({ message }) => {
-    const m = /Duration:\s*(\d+):(\d+):(\d+\.\d+)/.exec(message);
-    if (m) duration = (+m[1]) * 3600 + (+m[2]) * 60 + parseFloat(m[3]);
-  };
+  const lines = [];
+  const handler = ({ type, message }) => { if (type === 'stdout') lines.push(message); };
   ff.on('log', handler);
-  try { await ff.exec(['-i', name]); } catch { /* expected — no output file given */ }
-  ff.off('log', handler);
-  if (duration === null) throw new Error(`Could not determine duration for ${name}`);
-  return duration;
+  try {
+    await ff.ffprobe([
+      '-v', 'error',
+      '-show_entries', 'format=duration',
+      '-of', 'default=noprint_wrappers=1:nokey=1',
+      name,
+    ]);
+  } finally {
+    ff.off('log', handler);
+  }
+  const raw = lines.join('\n').trim();
+  const duration = parseFloat(raw);
+  if (!Number.isFinite(duration) || duration <= 0) {
+    throw new Error(`Could not determine duration for ${name} (ffprobe said "${raw}")`);
+  }
+  return PhashCore.roundDurationLikeStash(duration);
 }
 
-async function _extractFrame(ff, name, t, width, out) {
-  await ff.exec([
-    '-v', 'error', '-ss', String(t), '-i', name,
-    '-frames:v', '1', '-vf', `scale=${width}:-2`, '-c:v', 'bmp', '-f', 'image2', out,
-  ]);
-  const bytes = await ff.readFile(out);
+// Same argument list as src/ffmpeg-extract.js extractFrame, with the
+// output going to ffmpeg.wasm's in-memory FS instead of a pipe.
+async function _extractFrame(ff, name, t, { width, slowSeek }, out) {
+  const seek = ['-ss', String(t)];
+  const args = ['-v', 'error', '-y'];
+  if (!slowSeek) args.push(...seek);
+  args.push('-i', name);
+  if (slowSeek) args.push(...seek);
+  args.push('-frames:v', '1');
+  if (width != null) args.push('-vf', `scale=${width}:-2`);
+  args.push('-c:v', 'bmp', '-f', 'rawvideo', out);
+  const code = await ff.exec(args);
+  if (code !== 0) throw new Error(`ffmpeg exited with code ${code}`);
+  let bytes;
+  try {
+    bytes = await ff.readFile(out);
+  } catch {
+    throw new Error('ffmpeg produced no output frame');
+  }
   await ff.deleteFile(out);
   return BmpDecoder.decodeBMP(bytes);
 }
 
 // ---------------------------------------------------------------------------
-// File registry — chooseVideos() stores picked File objects here so
-// runPipeline() can look them up by the filename string it receives back.
+// File registry -- chooseVideos() / registerFiles() store picked File
+// objects here so runPipeline() can look them up by the filename string it
+// receives back.
 // ---------------------------------------------------------------------------
 
 const _files = new Map(); // filename -> File
 
 // ---------------------------------------------------------------------------
-// window.phashAPI — identical surface to Electron's preload.js
+// window.phashAPI -- identical surface to Electron's preload.js
 // ---------------------------------------------------------------------------
 //
 // Progress payloads are shaped to match exactly what main.js serialises over
@@ -88,17 +116,20 @@ window.phashAPI = {
       input.type = 'file';
       input.accept = 'video/*';
       input.multiple = true;
-      input.addEventListener('change', () => {
-        const names = [];
-        for (const file of input.files) {
-          _files.set(file.name, file);
-          names.push(file.name);
-        }
-        resolve(names);
-      }, { once: true });
+      input.addEventListener('change', () => resolve(window.phashAPI.registerFiles(input.files)), { once: true });
       input.addEventListener('cancel', () => resolve([]), { once: true });
       input.click();
     });
+  },
+
+  /** Registers File objects (from a picker or a drop) and returns their names. */
+  registerFiles(files) {
+    const names = [];
+    for (const file of files) {
+      _files.set(file.name, file);
+      names.push(file.name);
+    }
+    return names;
   },
 
   onProgress(jobId, callback) {
@@ -115,48 +146,48 @@ window.phashAPI = {
     if (!file) return { ok: false, error: `File not found in registry: ${videoPath}` };
     const ext = (file.name.split('.').pop() || 'mp4').toLowerCase();
     const inputName = `${jobId}.${ext}`;
+    let frameCounter = 0;
 
     try {
       const ff = await _getFF();
-
       await _serialized(async () => ff.writeFile(inputName, new Uint8Array(await file.arrayBuffer())));
 
-      const duration = await _serialized(() => _probeDuration(ff, inputName));
-      _emit(jobId, 'duration', { duration });
+      const deps = {
+        previewWidth: PREVIEW_WIDTH,
+        probeDuration: (name) => _serialized(() => _probeDuration(ff, name)),
+        extractFrame: (name, t, opts) =>
+          _serialized(() => _extractFrame(ff, name, t, opts, `${jobId}_${frameCounter++}.bmp`)),
+      };
 
-      const timestamps = PhashCore.computeScreenshotTimestamps(duration, PhashCore.COLUMNS * PhashCore.ROWS);
+      // Payload shapes match main.js's IPC serialisation so renderer.js works unchanged.
+      const onProgress = (stage, payload) => {
+        if (stage === 'frame') {
+          _emit(jobId, 'frame', {
+            index: payload.index, total: payload.total, timeSeconds: payload.timeSeconds,
+            previewWidth: payload.previewFrame.width,
+            previewHeight: payload.previewFrame.height,
+            previewData: payload.previewFrame.data,
+          });
+        } else if (stage === 'montage') {
+          const { montage } = payload;
+          _emit(jobId, 'montage', { width: montage.width, height: montage.height, data: montage.data });
+        } else if (stage === 'hash') {
+          _emit(jobId, 'hash', {
+            hex: payload.hex,
+            int64: payload.int64,
+            median: payload.median,
+            dctCoefficients8x8: Array.from(payload.dctCoefficients8x8),
+            resizedGray64x64: Array.from(payload.resizedGray64x64),
+            bits: payload.bits,
+          });
+        } else {
+          _emit(jobId, stage, payload);
+        }
+      };
 
-      const frames = [];
-      for (let i = 0; i < timestamps.length; i++) {
-        const t = timestamps[i];
-        const [frame, preview] = await _serialized(async () => [
-          await _extractFrame(ff, inputName, t, PhashCore.SCREENSHOT_WIDTH, `${jobId}_h_${i}.bmp`),
-          await _extractFrame(ff, inputName, t, PREVIEW_WIDTH, `${jobId}_p_${i}.bmp`),
-        ]);
-        frames.push(frame);
-        // Payload shape matches main.js IPC serialisation so renderer.js works unchanged.
-        _emit(jobId, 'frame', {
-          index: i, total: timestamps.length, timeSeconds: t,
-          previewWidth: preview.width, previewHeight: preview.height, previewData: preview.data,
-        });
-      }
-
+      const { duration, result } = await PipelineCore.runPipeline(inputName, onProgress, deps);
       await _serialized(() => ff.deleteFile(inputName));
-
-      const montage = PhashCore.buildMontage(frames, PhashCore.COLUMNS, PhashCore.ROWS);
-      _emit(jobId, 'montage', { width: montage.width, height: montage.height, data: montage.data });
-
-      const result = PhashCore.computePerceptionHash(montage);
-      _emit(jobId, 'hash', {
-        hex: result.hex,
-        int64: result.int64,
-        median: result.median,
-        dctCoefficients8x8: Array.from(result.dctCoefficients8x8),
-        resizedGray64x64: Array.from(result.resizedGray64x64),
-        bits: result.bits,
-      });
-
-      return { ok: true };
+      return { ok: true, duration, hex: result.hex, int64: result.int64 };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error('[phash-inspector] pipeline error:', err);
@@ -165,11 +196,10 @@ window.phashAPI = {
     }
   },
 
-  hammingDistance(hexA, hexB) {
-    let x = BigInt('0x' + hexA) ^ BigInt('0x' + hexB);
-    let n = 0;
-    while (x) { n += Number(x & 1n); x >>= 1n; }
-    return Promise.resolve(n);
+  /** Which ffmpeg is doing the decoding -- shown in the header so a mismatch
+   *  against Stash can be traced to a build difference. */
+  async describeBackend() {
+    return { name: 'ffmpeg.wasm', detail: `@ffmpeg/core ${window.FFMPEG_CORE_VERSION || ''}`.trim() };
   },
 };
 

@@ -15,4 +15,6 @@ contextBridge.exposeInMainWorld('phashAPI', {
   },
 
   hammingDistance: (hexA, hexB) => ipcRenderer.invoke('hamming-distance', { hexA, hexB }),
+
+  describeBackend: () => ipcRenderer.invoke('describe-backend'),
 });

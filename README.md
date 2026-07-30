@@ -63,10 +63,11 @@ Everything in the app is clickable:
 - **Click a frame** in any filmstrip to open a draggable before/after slider
   against another loaded video at the same sample index — drag the handle
   (or use the invisible full-width range track under it) to wipe between
-  the two. Both sides are extracted at the **source video's native
-  resolution** (a separate, unscaled ffmpeg call at the same timestamp;
-  never a re-extraction of what's already in memory, and never touches the
-  160px hash path). Switch which two videos you're comparing with the
+  the two. In the desktop app both sides are extracted at the **source
+  video's native resolution** (a separate, unscaled ffmpeg call at the same
+  timestamp; never a re-extraction of what's already in memory, and never
+  touches the 160px hash path). The web build caps previews at 480px wide
+  to keep browser memory in check. Switch which two videos you're comparing with the
   Video A / Video B dropdowns, and step through sample indices with the
   Prev/Next buttons or the ← / → arrow keys, without closing the modal.
 - **Click a collage** to open the same slider, but for the literal
@@ -122,8 +123,24 @@ For each video you add, it:
    instance to check for an exact match.
 
 Run `node tools/self-test.js <video> [expectedHash]` to do the same thing
-headlessly from the command line — handy for scripting a batch check
-against a folder of files you've already hashed in Stash.
+headlessly from the command line. To check against everything a running
+Stash instance has hashed in one go:
+
+```
+FFMPEG_PATH=/path/to/stash/ffmpeg FFPROBE_PATH=/path/to/stash/ffprobe \
+  node tools/stash-check.js --url http://localhost:9999/graphql
+```
+
+It asks Stash (GraphQL) for every file with a stored phash, runs the
+pipeline on each, and prints the Hamming distance per file; a non-zero exit
+means at least one mismatch. Pointing `FFMPEG_PATH`/`FFPROBE_PATH` at the
+binaries Stash itself uses takes ffmpeg-version differences out of the
+comparison.
+
+The browser build has the same kind of check: `pnpm run web:build`, then
+`node tools/web-check.js <video> [expectedHash]` drives a headless
+Chromium (set `CHROME=/path/to/chromium` if it isn't on `PATH`) through
+the real ffmpeg.wasm pipeline in the page and reports the hash.
 
 ## Fidelity notes — read this before trusting a "match"
 
@@ -133,8 +150,9 @@ Every stage in `shared/phash-core.js` has a `CONFIDENCE` comment; summary:
 
 | Stage                   | Confidence | Why                                                                                                                                                                                                                                                                                                       |
 | ----------------------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Sample timestamps       | High       | Read directly from `phash.go` source (v0.28.1 tag).                                                                                                                                                                                                                                                       |
-| ffmpeg frame extraction | High       | Uses the literal ffmpeg binary with the same args Stash passes (confirmed from a Stash issue thread showing the real command line), so decode/scale math is whatever your installed ffmpeg's libswscale does — same as Stash if you use the same ffmpeg build.                                            |
+| Probed duration         | High       | `ffprobe` format duration, then rounded to two decimals exactly as `pkg/ffmpeg/ffprobe.go` does (`math.Round(d*100)/100`) before it ever reaches the timestamp math. This rounding matters: on synthetic clips it moves 14–28 of the 64 bits, and it was verified against a live Stash instance.       |
+| Sample timestamps       | High       | Read directly from `phash.go` source (`offset = 0.05·d`, `step = 0.9·d/25`) and fed the rounded duration above.                                                                                                                                                                                          |
+| ffmpeg frame extraction | High       | Literal port of `transcoder.ScreenshotTime` + `ScreenshotOutputTypeBMP` (`-ss` before `-i`, `-frames:v 1`, `-vf scale=160:-2`, `-c:v bmp -f rawvideo`), including `phash.go`'s fallback to accurate seeking (`-ss` after `-i`) for the rest of a video once a fast seek fails. Decode/scale math is whatever the ffmpeg build in use does — the app shows which one that is in its header. |
 | Montage assembly        | High       | Simple pixel copy, matches `imaging.New` + `imaging.Paste` (no blending, no compression) — confirmed against `disintegration/imaging`'s actual `tools.go` source.                                                                                                                                        |
 | 64×64 resize            | **High**   | Line-for-line port of `nfnt/resize`'s actual fixed-point Bilinear path (`resize.go`/`filters.go`/`converter.go`), including int16 weight quantization, truncating (not rounded) integer division, and edge-clamp behavior — not a floating-point approximation of it.                                    |
 | Grayscale               | High       | Verified against `transforms/pixels.go`: reduces to plain `0.299R + 0.587G + 0.114B` on the resize's exact 8-bit output.                                                                                                                                                                                  |
@@ -174,8 +192,16 @@ the real `goimagehash` + `nfnt/resize` libraries directly:
 
 ```
 cd tools/go-reference
-go mod init phashref && go mod tidy
 go run . /path/to/exported-montage.png
+```
+
+Its `go.mod` is pinned to the exact library versions in Stash's own
+`go.mod`. The same program generates `test/fixtures/expected.json`, the
+golden hashes that `pnpm test` checks the JS port against on every run:
+
+```
+node test/fixtures/generate.js /tmp/fixtures
+cd tools/go-reference && go run . /tmp/fixtures/*.png > ../../test/fixtures/expected.json
 ```
 
 Export a collage from the app with the "Save collage as PNG…" button, run

@@ -23,7 +23,18 @@ const ROWS = 5;
 // See https://github.com/corona10/goimagehash/blob/v1.1.0/hashcompute.go#L74
 const HASH_RESIZE = 64;
 
+// pkg/ffmpeg/ffprobe.go: `result.FileDuration = math.Round(duration*100) / 100`.
+// That rounded value is what VideoFile.Duration holds when phash.go derives
+// its sample timestamps, so the raw ffprobe duration must go through this
+// first. Skipping it shifts every timestamp by up to 5ms -- enough to land
+// on a different frame across a cut (verified against a live Stash on
+// synthetic clips where it flips 14-28 of the 64 bits).
+function roundDurationLikeStash(seconds) {
+  return Math.round(seconds * 100) / 100;
+}
+
 // See https://github.com/stashapp/stash/blob/develop/pkg/hash/videophash/phash.go#L84-L86
+// `durationSeconds` must already be Stash-rounded (see above).
 function computeScreenshotTimestamps(durationSeconds, count = COLUMNS * ROWS) {
   const offset = 0.05 * durationSeconds;
   const stepSize = (0.9 * durationSeconds) / count;
@@ -598,6 +609,7 @@ const PhashCore = {
   ROWS,
   SCREENSHOT_WIDTH,
   HASH_RESIZE,
+  roundDurationLikeStash,
   computeScreenshotTimestamps,
   buildMontage,
   resizeAA,

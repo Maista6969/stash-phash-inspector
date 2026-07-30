@@ -13,6 +13,7 @@
     "start": "electron . --no-sandbox",
     "test": "node --test \"test/**/*.test.js\"",
     "stash-check": "node tools/stash-check.js",
+    "web:check": "node tools/web-check.js",
     "dist": "electron-builder --publish=never",
     "release": "electron-builder --publish=always",
     "web:build": "pnpm --filter stash-phash-inspector-web run build",

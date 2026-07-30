@@ -20,6 +20,7 @@ const files = [
   'web/build.mjs',
   'tools/self-test.js',
   'tools/stash-check.js',
+  'tools/web-check.js',
 ];
 
 for (const file of files) {

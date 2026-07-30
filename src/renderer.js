@@ -82,6 +82,17 @@ let syncingScroll = false;
 
 let jobCounter = 0;
 
+(async function showBackend() {
+  const el = document.getElementById('backend-info');
+  if (!el || !window.phashAPI.describeBackend) return;
+  try {
+    const b = await window.phashAPI.describeBackend();
+    el.textContent = `Decoding with ${b.name}: ${b.detail}`;
+  } catch (err) {
+    el.textContent = `Backend: ${err.message}`;
+  }
+}());
+
 document.getElementById('add-videos').addEventListener('click', async () => {
   const paths = await window.phashAPI.chooseVideos();
   for (const p of paths) addVideo(p);
@@ -172,7 +183,14 @@ function addVideo(videoPath) {
 
   const unsubscribe = window.phashAPI.onProgress(jobId, ({ stage, payload }) => {
     if (stage === 'duration') {
-      statusEl.textContent = `Duration: ${payload.duration.toFixed(3)}s — extracting frames…`;
+      statusEl.textContent = `Duration: ${payload.duration.toFixed(2)}s — extracting frames…`;
+    }
+
+    if (stage === 'slow-seek') {
+      // Stash logs a warning and carries on with accurate seeking; surface
+      // the same fact here since it changes which frames get sampled.
+      job.slowSeekFrom = payload.timeSeconds;
+      statusEl.textContent = `Fast seek failed at ${payload.timeSeconds.toFixed(2)}s — using accurate seek from here on (as Stash does)…`;
     }
 
     if (stage === 'frame') {

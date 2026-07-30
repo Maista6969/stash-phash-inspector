@@ -2,6 +2,7 @@
 
 const { spawn } = require('child_process');
 const { decodeBMP } = require('../shared/bmp');
+const { roundDurationLikeStash } = require('../shared/phash-core');
 
 /**
  * Resolves which ffmpeg/ffprobe binary to actually run, in priority order:
@@ -89,31 +90,44 @@ async function probeDuration(inputPath) {
   if (!Number.isFinite(duration) || duration <= 0) {
     throw new Error(`Could not determine duration for ${inputPath} (got "${out.toString().trim()}")`);
   }
-  return duration;
+  return roundDurationLikeStash(duration);
 }
 
 /**
- * Mirrors transcoder.ScreenshotTime: input-seeking (-ss before -i), a
- * single frame, output as uncompressed BMP so no lossy compression enters
- * the hash pipeline. When `width` is given, scales to that width with
- * height auto-computed to keep aspect ratio and stay even (-2) -- this is
- * the path used for the actual 160px hash frame. When `width` is omitted,
- * no `-vf scale` filter is applied at all, so the frame comes out at the
- * source video's native resolution (used for the filmstrip/zoom preview).
+ * Mirrors transcoder.ScreenshotTime with ScreenshotOutputTypeBMP: a single
+ * frame, output as uncompressed BMP so no lossy compression enters the hash
+ * pipeline. When `width` is given, scales to that width with height
+ * auto-computed to keep aspect ratio and stay even (-2) -- this is the path
+ * used for the actual 160px hash frame. When `width` is omitted, no `-vf
+ * scale` filter is applied at all, so the frame comes out at the source
+ * video's native resolution (used for the filmstrip/zoom preview).
+ *
+ * `slowSeek` mirrors ScreenshotOptions.SlowSeek: normally `-ss` goes before
+ * `-i` (fast keyframe seek, then decode up to the exact time); with
+ * slowSeek it goes after `-i`, decoding from the start. Stash flips to slow
+ * seek for the rest of a video the first time a fast seek fails.
  */
-async function extractFrame(inputPath, timeSeconds, { width } = {}) {
-  const args = [
-    '-v', 'error',
-    '-ss', String(timeSeconds),
-    '-i', inputPath,
-    '-frames:v', '1',
-  ];
+async function extractFrame(inputPath, timeSeconds, { width, slowSeek = false } = {}) {
+  const seek = ['-ss', formatSeconds(timeSeconds)];
+  const args = ['-v', 'error', '-y'];
+  if (!slowSeek) args.push(...seek);
+  args.push('-i', inputPath);
+  if (slowSeek) args.push(...seek);
+  args.push('-frames:v', '1');
   if (width != null) {
     args.push('-vf', `scale=${width}:-2`);
   }
-  args.push('-c:v', 'bmp', '-f', 'image2', 'pipe:1');
+  // ScreenshotOutputTypeBMP: codec bmp, format rawvideo (byte-identical to
+  // image2 for a single frame, but this is the literal Stash invocation).
+  args.push('-c:v', 'bmp', '-f', 'rawvideo', 'pipe:1');
   const bmpBuffer = await run(getFfmpegPath(), args);
   return decodeBMP(bmpBuffer);
+}
+
+// options.go: `fmt.Sprint(seconds)` -- Go's %v for float64 is the shortest
+// representation that round-trips, which is also what JS String() gives.
+function formatSeconds(t) {
+  return String(t);
 }
 
 /**

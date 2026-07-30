@@ -40,6 +40,7 @@ header {
 h1 { margin: 0 0 4px; font-size: 20px; font-weight: 500; }
 .subtitle { margin: 0 0 12px; color: var(--muted); font-size: 13px; }
 .subtitle a { color: var(--link); }
+.backend-info { margin: 8px 0 0; color: var(--muted); font-size: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 
 button {
   background: var(--primary);

@@ -18,6 +18,7 @@
       <button id="add-videos">Add video files&hellip;</button>
       <label class="advanced-toggle"><input type="checkbox" id="advanced-mode-toggle" /> Show technical details</label>
     </div>
+    <p class="backend-info" id="backend-info"></p>
   </header>
 
   <main>
@@ -100,11 +101,13 @@
     </div>
   </template>
 
+  <!-- FFMPEG_CORE_VERSION -->
   <!-- ffmpeg.wasm (vendored UMD build, see build.mjs) -->
   <script src="vendor/ffmpeg.js"></script>
   <!-- Shared algorithm files (same bytes as the Electron app) -->
   <script src="shared/bmp.js"></script>
   <script src="shared/phash-core.js"></script>
+  <script src="shared/pipeline-core.js"></script>
   <!-- Browser pipeline adapter: provides window.phashAPI -->
   <script src="browser-api.js"></script>
   <!-- Shared UI: the exact same renderer the Electron app uses -->

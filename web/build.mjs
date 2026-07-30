@@ -11,7 +11,7 @@
 //               run unchanged in both contexts)
 //   - ../shared (phash-core.js / bmp.js -- one canonical copy of the algorithm)
 //   - node_modules/@ffmpeg/* (vendored so the site works without a CDN)
-import { cpSync, mkdirSync, rmSync, existsSync, readdirSync } from 'node:fs';
+import { cpSync, mkdirSync, rmSync, existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
@@ -32,8 +32,13 @@ function copy(src, dest) {
   console.log(`${path.relative(__dirname, src)} -> ${path.relative(__dirname, dest)}`);
 }
 
-// Web-specific shell
-copy(path.join(__dirname, 'index.html'),      path.join(dist, 'index.html'));
+// Web-specific shell. The @ffmpeg/core version is stamped in so the page
+// can say which ffmpeg build decoded the frames (see describeBackend()).
+const coreVersion = JSON.parse(readFileSync(path.join(__dirname, 'node_modules', '@ffmpeg', 'core', 'package.json'), 'utf8')).version;
+const shell = readFileSync(path.join(__dirname, 'index.html'), 'utf8')
+  .replace('<!-- FFMPEG_CORE_VERSION -->', `<script>window.FFMPEG_CORE_VERSION = ${JSON.stringify(coreVersion)};</script>`);
+writeFileSync(path.join(dist, 'index.html'), shell);
+console.log(`index.html -> dist/index.html (@ffmpeg/core ${coreVersion})`);
 copy(path.join(__dirname, 'browser-api.js'),  path.join(dist, 'browser-api.js'));
 
 // Shared UI -- the exact same files shipped in the Electron app
@@ -41,8 +46,9 @@ copy(path.join(root, 'src', 'renderer.js'),  path.join(dist, 'renderer.js'));
 copy(path.join(root, 'src', 'styles.css'),   path.join(dist, 'styles.css'));
 
 // The one canonical copy of the hashing algorithm
-copy(path.join(root, 'shared', 'phash-core.js'), path.join(dist, 'shared', 'phash-core.js'));
-copy(path.join(root, 'shared', 'bmp.js'),         path.join(dist, 'shared', 'bmp.js'));
+copy(path.join(root, 'shared', 'phash-core.js'),    path.join(dist, 'shared', 'phash-core.js'));
+copy(path.join(root, 'shared', 'pipeline-core.js'), path.join(dist, 'shared', 'pipeline-core.js'));
+copy(path.join(root, 'shared', 'bmp.js'),           path.join(dist, 'shared', 'bmp.js'));
 
 // Vendored ffmpeg.wasm (UMD build -- loaded as a plain <script> tag, no
 // bundler needed). Self-hosted so the page works offline once cached and

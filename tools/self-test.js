@@ -11,6 +11,7 @@
 
 const path = require('path');
 const { runPipeline } = require('../src/pipeline');
+const { describeBinaries } = require('../src/ffmpeg-extract');
 const { hammingDistance } = require('../shared/phash-core');
 
 function toHex(raw) {
@@ -32,10 +33,14 @@ function toHex(raw) {
   }
   const videoPath = path.resolve(videoArg);
 
+  const bins = await describeBinaries();
+  console.log(`ffmpeg:  ${bins.ffmpeg.version}  ${bins.ffmpeg.path}`);
+  console.log(`ffprobe: ${bins.ffprobe.version}  ${bins.ffprobe.path}`);
   process.stdout.write(`Processing ${videoPath} `);
-  const { duration, result } = await runPipeline(videoPath, (stage) => {
+  const { duration, result } = await runPipeline(videoPath, (stage, payload) => {
     if (stage === 'frame') process.stdout.write('.');
-  });
+    if (stage === 'slow-seek') process.stdout.write(`\n  fast seek failed at ${payload.timeSeconds.toFixed(3)}s, switching to accurate seek (as Stash does)\n`);
+  }, { preview: false });
   console.log('');
   console.log('duration:', duration.toFixed(3), 's');
   console.log('hash hex:', result.hex);
