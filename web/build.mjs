@@ -48,6 +48,7 @@ copy(path.join(root, 'src', 'styles.css'),   path.join(dist, 'styles.css'));
 // The one canonical copy of the hashing algorithm
 copy(path.join(root, 'shared', 'phash-core.js'),    path.join(dist, 'shared', 'phash-core.js'));
 copy(path.join(root, 'shared', 'pipeline-core.js'), path.join(dist, 'shared', 'pipeline-core.js'));
+copy(path.join(root, 'shared', 'hash-format.js'),   path.join(dist, 'shared', 'hash-format.js'));
 copy(path.join(root, 'shared', 'bmp.js'),           path.join(dist, 'shared', 'bmp.js'));
 
 // Vendored ffmpeg.wasm (UMD build -- loaded as a plain <script> tag, no

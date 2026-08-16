@@ -145,7 +145,20 @@ async function cdp(wsUrl) {
     while (Date.now() - started < 600000) {
       const hex = document.querySelector('.hash-hex').textContent;
       const status = document.querySelector('.filmstrip-row .status').textContent;
-      if (/^[0-9a-f]{16}$/.test(hex)) return { hex, status, backend: document.getElementById('backend-info').textContent, frames: document.querySelectorAll('.filmstrip figure').length };
+      if (/^[0-9a-f]{16}$/.test(hex)) {
+        // Also exercise the "compare against a known phash" box with the
+        // signed int64 spelling, the one Stash's database uses.
+        const input = document.querySelector('.golden-input');
+        input.value = document.querySelector('.hash-int64').textContent;
+        input.dispatchEvent(new Event('change'));
+        await new Promise((r) => setTimeout(r, 200));
+        return {
+          hex, status,
+          backend: document.getElementById('backend-info').textContent,
+          frames: document.querySelectorAll('.filmstrip figure').length,
+          golden: document.querySelector('.golden-result').textContent,
+        };
+      }
       if (status.startsWith('Error')) return { error: status };
       await new Promise((r) => setTimeout(r, 200));
     }
@@ -161,9 +174,15 @@ async function cdp(wsUrl) {
     console.error('FAILED:', out.error, consoleErrors.length ? `\nconsole: ${consoleErrors.join('\n')}` : '');
     process.exit(1);
   }
+  if (consoleErrors.length) console.log(`page exceptions:\n  ${consoleErrors.join('\n  ')}`);
   console.log(`backend: ${out.backend}`);
   console.log(`frames rendered: ${out.frames}`);
   console.log(`hash hex: ${out.hex}`);
+  console.log(`int64 round-trip via the compare box: ${out.golden}`);
+  if (!out.golden.startsWith('exact match')) {
+    console.error('FAILED: the compare box did not recognise the int64 form of the hash');
+    process.exit(1);
+  }
   if (opts.expected) {
     const distance = hammingDistance(BigInt('0x' + out.hex), BigInt('0x' + opts.expected));
     console.log(`expected: ${opts.expected}\nhamming distance: ${distance} ${distance === 0 ? '(exact match)' : '(MISMATCH)'}`);

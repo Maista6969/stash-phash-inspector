@@ -246,6 +246,7 @@ function addVideo(videoPath) {
     }
 
     if (stage === 'error') {
+      job.failed = true;
       statusEl.textContent = `Error: ${payload.message}`;
       unsubscribe();
     }
@@ -259,31 +260,26 @@ function addVideo(videoPath) {
     a.click();
   });
 
-  goldenInput.addEventListener('change', async () => {
+  goldenInput.addEventListener('change', () => {
     const raw = goldenInput.value.trim();
     if (!raw) { goldenResult.textContent = ''; return; }
-    const known = normalizeToHex(raw);
-    if (!job.hex || !known) { goldenResult.textContent = 'invalid input'; return; }
-    const distance = await window.phashAPI.hammingDistance(job.hex, known);
+    const known = HashFormat.parseHashInput(raw);
+    if (!known) { goldenResult.textContent = 'not a hash (expected 16 hex digits or a signed int64)'; goldenResult.className = 'golden-result mismatch'; return; }
+    if (!job.hex) { goldenResult.textContent = 'still processing'; goldenResult.className = 'golden-result'; return; }
+    const distance = hammingDistanceHex(job.hex, known);
     goldenResult.textContent = distance === 0 ? 'exact match ✓' : isAdvanced() ? `Hamming distance: ${distance}` : `${distance} bit${distance === 1 ? '' : 's'} differ`;
     goldenResult.className = `golden-result ${distance === 0 ? 'match' : 'mismatch'}`;
   });
 
   window.phashAPI.runPipeline(jobId, videoPath).then((res) => {
-    if (!res.ok) statusEl.textContent = `Error: ${res.error}`;
-  });
-}
-
-function normalizeToHex(raw) {
-  try {
-    if (/^-?\d+$/.test(raw) && !/^[0-9a-f]+$/i.test(raw.replace('-', ''))) {
-      return BigInt.asUintN(64, BigInt(raw)).toString(16).padStart(16, '0');
+    // Failures normally arrive as an 'error' progress event; this only
+    // catches a backend that returned without emitting one.
+    if (!res.ok && !job.failed) {
+      job.failed = true;
+      statusEl.textContent = `Error: ${res.error}`;
+      unsubscribe();
     }
-    const cleaned = raw.replace(/^0x/i, '');
-    return BigInt.asUintN(64, BigInt('0x' + cleaned)).toString(16).padStart(16, '0');
-  } catch {
-    return null;
-  }
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -757,7 +753,7 @@ function openMontageComparisonModal(originJobId) {
     if (jobA && jobB) overlayCanvas = buildOverlayCanvas(jobA, jobB, canvasB.width || 800);
 
     if (jobA && jobB && jobA.hex && jobB.hex) {
-      const distance = hammingDistanceLocal(jobA.hex, jobB.hex);
+      const distance = hammingDistanceHex(jobA.hex, jobB.hex);
       summary.textContent = isAdvanced()
         ? `Hamming distance: ${distance} of 64 bits.`
         : `${distance} of 64 bits differ.`;
@@ -934,7 +930,11 @@ function drawDctHeatmap(canvas, coeffs, bits, median, highlightSet) {
   const ctx = canvas.getContext('2d');
   const size = canvas.width; // square canvas, 8x8 grid
   const cell = size / 8;
-  const maxAbs = Math.max(...coeffs.map((v) => Math.abs(v))) || 1;
+  // Colour intensity is scaled by the largest AC coefficient. The DC term
+  // (index 0, the sum of all 4096 pixels) is typically 10-100x larger than
+  // anything else and would flatten every other cell to the minimum colour
+  // if it set the scale. It still gets its own (saturated) cell.
+  const maxAbs = Math.max(...coeffs.slice(1).map((v) => Math.abs(v))) || 1;
 
   for (let j = 0; j < 8; j++) {
     for (let i = 0; i < 8; i++) {
@@ -971,26 +971,27 @@ function updateComparisonTable() {
   if (withHash.length < 2) { comparisonSection.hidden = true; return; }
   comparisonSection.hidden = false;
 
-  let html = '<tr><th></th>' + withHash.map((j) => `<th>${j.name}</th>`).join('') + '</tr>';
+  // Built with DOM methods, not innerHTML: file names are untrusted text.
+  comparisonTable.replaceChildren();
+  const cell = (tag, text) => {
+    const el = document.createElement(tag);
+    el.textContent = text;
+    return el;
+  };
+  const header = document.createElement('tr');
+  header.appendChild(cell('th', ''));
+  for (const j of withHash) header.appendChild(cell('th', j.name));
+  comparisonTable.appendChild(header);
   for (const rowJob of withHash) {
-    html += `<tr><th>${rowJob.name}</th>`;
+    const tr = document.createElement('tr');
+    tr.appendChild(cell('th', rowJob.name));
     for (const colJob of withHash) {
-      if (rowJob === colJob) {
-        html += '<td>&mdash;</td>';
-      } else {
-        html += `<td>${hammingDistanceLocal(rowJob.hex, colJob.hex)}</td>`;
-      }
+      tr.appendChild(cell('td', rowJob === colJob ? '\u2014' : String(hammingDistanceHex(rowJob.hex, colJob.hex))));
     }
-    html += '</tr>';
+    comparisonTable.appendChild(tr);
   }
-  comparisonTable.innerHTML = html;
 }
 
-function hammingDistanceLocal(hexA, hexB) {
-  let a = BigInt('0x' + hexA);
-  let b = BigInt('0x' + hexB);
-  let x = a ^ b;
-  let count = 0n;
-  while (x) { count += x & 1n; x >>= 1n; }
-  return Number(count);
+function hammingDistanceHex(hexA, hexB) {
+  return PhashCore.hammingDistance(BigInt('0x' + hexA), BigInt('0x' + hexB));
 }

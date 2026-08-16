@@ -13,17 +13,8 @@ const path = require('path');
 const { runPipeline } = require('../src/pipeline');
 const { describeBinaries } = require('../src/ffmpeg-extract');
 const { hammingDistance } = require('../shared/phash-core');
+const { parseHashInput } = require('../shared/hash-format');
 
-function toHex(raw) {
-  if (/^[0-9a-fA-F]{1,16}$/.test(raw) && !/^\d+$/.test(raw)) {
-    return BigInt.asUintN(64, BigInt('0x' + raw)).toString(16).padStart(16, '0');
-  }
-  try {
-    return BigInt.asUintN(64, BigInt(raw)).toString(16).padStart(16, '0');
-  } catch {
-    return BigInt.asUintN(64, BigInt('0x' + raw)).toString(16).padStart(16, '0');
-  }
-}
 
 (async () => {
   const [, , videoArg, expected] = process.argv;
@@ -47,7 +38,11 @@ function toHex(raw) {
   console.log('hash int64:', result.int64);
 
   if (expected) {
-    const expectedHex = toHex(expected.trim());
+    const expectedHex = parseHashInput(expected);
+    if (!expectedHex) {
+      console.error(`ERROR: "${expected}" is not a phash (expected 16 hex digits or a signed int64)`);
+      process.exit(1);
+    }
     const distance = hammingDistance(BigInt('0x' + result.hex), BigInt('0x' + expectedHex));
     console.log('expected hex:', expectedHex);
     console.log('hamming distance:', distance, distance === 0 ? '(exact match)' : '(MISMATCH)');

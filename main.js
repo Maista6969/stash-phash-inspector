@@ -4,7 +4,6 @@ const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const { join } = require('path');
 const { runPipeline } = require('./src/pipeline');
 const { describeBinaries } = require('./src/ffmpeg-extract');
-const { hammingDistance } = require('./shared/phash-core');
 
 let mainWindow;
 
@@ -95,10 +94,4 @@ ipcMain.handle('run-pipeline', async (event, { jobId, videoPath }) => {
 ipcMain.handle('describe-backend', async () => {
   const b = await describeBinaries();
   return { name: 'native ffmpeg', detail: `ffmpeg ${b.ffmpeg.version} (${b.ffmpeg.path}), ffprobe ${b.ffprobe.version} (${b.ffprobe.path})` };
-});
-
-ipcMain.handle('hamming-distance', (event, { hexA, hexB }) => {
-  const a = BigInt('0x' + hexA);
-  const b = BigInt('0x' + hexB);
-  return hammingDistance(a, b);
 });
