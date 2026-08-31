@@ -12,8 +12,12 @@
  *
  * deps:
  *   probeDuration(videoPath) -> Promise<number>   Stash-rounded seconds
- *   extractFrame(videoPath, timeSeconds, { width?, slowSeek }) -> Promise<{width,height,data}>
- *       width undefined means "no scale filter" (native resolution)
+ *   extractFrame(videoPath, timeSeconds, { width?, slowSeek, preview }) -> Promise<frame>
+ *       width undefined means "no scale filter" (native resolution).
+ *       Hash frames (preview: false) must come back decoded as
+ *       {width,height,data}; preview frames are display-only and may come
+ *       back in whatever form the UI binding prefers (the Electron and web
+ *       bindings both return { png: bytes }).
  *   preview: false to skip the display-only preview extraction entirely
  *   previewWidth: cap the preview at this width (default: native resolution)
  *
@@ -24,7 +28,7 @@
  *                                             video uses accurate seek
  *   ('frame', { index, total, timeSeconds, frame, previewFrame })
  *       frame = {width,height,data} at SCREENSHOT_WIDTH -- feeds the hash
- *       previewFrame = {width,height,data} display only, or null
+ *       previewFrame = whatever extractFrame returned for the preview, or null
  *   ('montage', { montage })
  *   ('hash', result)  // result = computePerceptionHash() output
  */
@@ -44,7 +48,7 @@ async function runPipeline(videoPath, onProgress = () => {}, deps) {
     throw new Error('runPipeline needs deps.probeDuration and deps.extractFrame');
   }
   const wantPreview = deps.preview !== false;
-  const previewOpts = deps.previewWidth != null ? { width: deps.previewWidth } : {};
+  const previewOpts = { preview: true, ...(deps.previewWidth != null ? { width: deps.previewWidth } : {}) };
 
   const duration = await deps.probeDuration(videoPath);
   onProgress('duration', { duration });

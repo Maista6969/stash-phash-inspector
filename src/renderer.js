@@ -72,9 +72,31 @@ function closeModal() {
   activeModalOnClose = null;
 }
 
-// jobId -> { name, timestamps: [], frameCanvases: [HTMLCanvasElement...],
+// jobId -> { name, timestamps: [], previews: [Blob (PNG) per sample index],
 //            cleanMontageCanvas, dct, bits, median, hex, int64 }
 const jobs = new Map();
+
+// Thumbnails are decoded at this width (2x the 176px CSS width for HiDPI).
+// Full-resolution previews are decoded on demand from the PNG blobs.
+const THUMB_WIDTH = 352;
+
+// Each video costs 50 ffmpeg runs; without a cap, adding a folder's worth
+// spawns them all at once. (The web build is additionally serialised by
+// ffmpeg.wasm itself.)
+const MAX_CONCURRENT_JOBS = 2;
+const pendingJobs = [];
+let runningJobs = 0;
+function enqueueJob(start) {
+  pendingJobs.push(start);
+  pumpJobs();
+}
+function pumpJobs() {
+  while (runningJobs < MAX_CONCURRENT_JOBS && pendingJobs.length) {
+    runningJobs++;
+    const start = pendingJobs.shift();
+    Promise.resolve().then(start).finally(() => { runningJobs--; pumpJobs(); });
+  }
+}
 // All live `.filmstrip` elements, kept in sync so scrolling any one of
 // them scrolls the rest to the same position.
 const syncedFilmstrips = new Set();
@@ -137,7 +159,7 @@ function addVideo(videoPath) {
   const name = baseName(videoPath);
 
   const job = {
-    name, timestamps: [], frameCanvases: [],
+    name, timestamps: [], previews: [],
     cleanMontageCanvas: document.createElement('canvas'),
     dct: null, gray: null, bits: null, median: null, hex: null, int64: null,
   };
@@ -179,7 +201,7 @@ function addVideo(videoPath) {
   const goldenResult = hashCard.querySelector('.golden-result');
   hashCardsEl.appendChild(hashCard);
 
-  statusEl.textContent = 'Probing duration…';
+  statusEl.textContent = 'Queued…';
 
   const unsubscribe = window.phashAPI.onProgress(jobId, ({ stage, payload }) => {
     if (stage === 'duration') {
@@ -199,13 +221,15 @@ function addVideo(videoPath) {
 
       const fig = document.createElement('figure');
       const canvas = document.createElement('canvas');
-      // The high-resolution preview frame, same timestamp as the 160px
-      // hash frame but extracted separately at a larger width -- this
-      // canvas is what both the filmstrip thumbnail AND the zoom modal
-      // read from, so "zooming in" is just displaying it larger, not a
-      // re-extraction.
-      drawRGBAToCanvas(canvas, payload.previewWidth, payload.previewHeight, payload.previewData);
-      job.frameCanvases[payload.index] = canvas;
+      // The preview is a separate screenshot at the same timestamp as the
+      // 160px hash frame (native resolution in Electron, capped in the web
+      // build). It arrives as PNG bytes and is kept compressed; only a
+      // small thumbnail is decoded here. The zoom modal decodes the full
+      // frame from the same blob on demand, so 25 native-resolution
+      // bitmaps per video never sit in memory at once.
+      const blob = new Blob([payload.previewPng], { type: 'image/png' });
+      job.previews[payload.index] = blob;
+      drawThumbnail(canvas, blob);
 
       const caption = document.createElement('figcaption');
       caption.textContent = `#${payload.index + 1} · ${payload.timeSeconds.toFixed(2)}s`;
@@ -271,15 +295,40 @@ function addVideo(videoPath) {
     goldenResult.className = `golden-result ${distance === 0 ? 'match' : 'mismatch'}`;
   });
 
-  window.phashAPI.runPipeline(jobId, videoPath).then((res) => {
-    // Failures normally arrive as an 'error' progress event; this only
-    // catches a backend that returned without emitting one.
-    if (!res.ok && !job.failed) {
-      job.failed = true;
-      statusEl.textContent = `Error: ${res.error}`;
-      unsubscribe();
-    }
+  enqueueJob(() => {
+    statusEl.textContent = 'Probing duration…';
+    return window.phashAPI.runPipeline(jobId, videoPath).then((res) => {
+      // Failures normally arrive as an 'error' progress event; this only
+      // catches a backend that returned without emitting one.
+      if (!res.ok && !job.failed) {
+        job.failed = true;
+        statusEl.textContent = `Error: ${res.error}`;
+        unsubscribe();
+      }
+    });
   });
+}
+
+function drawThumbnail(canvas, blob) {
+  createImageBitmap(blob, { resizeWidth: THUMB_WIDTH, resizeQuality: 'high' }).then((bmp) => {
+    canvas.width = bmp.width;
+    canvas.height = bmp.height;
+    canvas.getContext('2d').drawImage(bmp, 0, 0);
+    bmp.close();
+  });
+}
+
+/** Decodes a job's full-resolution preview for one sample index into a fresh canvas, or null if not extracted yet. */
+async function decodePreview(job, index) {
+  const blob = job && job.previews[index];
+  if (!blob) return null;
+  const bmp = await createImageBitmap(blob);
+  const c = document.createElement('canvas');
+  c.width = bmp.width;
+  c.height = bmp.height;
+  c.getContext('2d').drawImage(bmp, 0, 0);
+  bmp.close();
+  return c;
 }
 
 // ---------------------------------------------------------------------------
@@ -421,7 +470,12 @@ function buildCompareSlider({ canvasA, canvasB, labelA, labelB, overlayCanvas })
 // 5x5 grid (each tile = 64/5 = 12.8 pixels wide/tall in the 64x64 space).
 // ---------------------------------------------------------------------------
 
-function buildFrameOverlayCanvas(jobA, jobB, frameIndex, outWidth, outHeight) {
+/**
+ * The DCT-contribution heatmap between two hashed videos as a 64x64 canvas
+ * (the resolution the hash actually works at), or null when both hashes
+ * are identical or either video hasn't finished. Callers scale or crop it.
+ */
+function buildHeatmapCanvas64(jobA, jobB) {
   if (!jobA || !jobB || !jobA.dct || !jobB.dct || !jobA.gray || !jobB.gray) return null;
 
   const diffWeights = {};
@@ -451,6 +505,12 @@ function buildFrameOverlayCanvas(jobA, jobB, frameIndex, outWidth, outHeight) {
     imgData.data[i * 4 + 3] = Math.round(200 + 52 * v);
   }
   sctx.putImageData(imgData, 0, 0);
+  return small;
+}
+
+function buildFrameOverlayCanvas(jobA, jobB, frameIndex, outWidth, outHeight) {
+  const small = buildHeatmapCanvas64(jobA, jobB);
+  if (!small) return null;
 
   // Crop the tile region for this frame index out of the full 64x64 heatmap.
   const tileCol = frameIndex % PhashCore.COLUMNS;
@@ -560,10 +620,9 @@ function openFrameComparisonModal(index, originJobId) {
     return c;
   }
 
-  function updateOverlay() {
+  function updateOverlay(refCanvas) {
     const jobA = jobs.get(selA.value);
     const jobB = jobs.get(selB.value);
-    const refCanvas = (jobA && jobA.frameCanvases[currentIndex]) || (jobB && jobB.frameCanvases[currentIndex]);
     const w = refCanvas ? refCanvas.width : 480;
     const h = refCanvas ? refCanvas.height : 270;
     const newOverlay = buildFrameOverlayCanvas(jobA, jobB, currentIndex, w, h);
@@ -576,11 +635,17 @@ function openFrameComparisonModal(index, originJobId) {
     if (slider) slider.setOverlayVisible(overlayCheckbox.checked && available);
   }
 
-  function render() {
+  // Decoding two full-resolution PNGs is async; the token makes sure a
+  // slow decode can't overwrite the result of a later prev/next press.
+  let renderToken = 0;
+  async function render() {
+    const token = ++renderToken;
     const jobA = jobs.get(selA.value);
     const jobB = jobs.get(selB.value);
-    const canvasA = (jobA && jobA.frameCanvases[currentIndex]) ? cloneCanvas(jobA.frameCanvases[currentIndex]) : placeholderCanvas();
-    const canvasB = (jobB && jobB.frameCanvases[currentIndex]) ? cloneCanvas(jobB.frameCanvases[currentIndex]) : placeholderCanvas();
+    const [decodedA, decodedB] = await Promise.all([decodePreview(jobA, currentIndex), decodePreview(jobB, currentIndex)]);
+    if (token !== renderToken) return;
+    const canvasA = decodedA || placeholderCanvas();
+    const canvasB = decodedB || placeholderCanvas();
     const labelA = jobA ? jobA.name : '—';
     const labelB = jobB ? jobB.name : '—';
 
@@ -600,7 +665,7 @@ function openFrameComparisonModal(index, originJobId) {
       : `Frame ${currentIndex + 1} of ${total}`;
     prevBtn.disabled = currentIndex <= 0;
     nextBtn.disabled = currentIndex >= total - 1;
-    updateOverlay();
+    updateOverlay(decodedA || decodedB);
   }
 
   function goTo(newIndex) {
@@ -704,34 +769,8 @@ function openMontageComparisonModal(originJobId) {
   }
 
   function buildOverlayCanvas(jobA, jobB, size) {
-    if (!jobA.dct || !jobB.dct || !jobA.gray || !jobB.gray) return null;
-    const diffWeights = {};
-    let anyDiff = false;
-    for (let i = 0; i < 64; i++) {
-      if (jobA.bits[i] !== jobB.bits[i]) {
-        diffWeights[i] = Math.abs(jobA.dct[i] - jobB.dct[i]);
-        anyDiff = true;
-      }
-    }
-    if (!anyDiff) return null;
-
-    const pixelDiff = new Float64Array(4096);
-    for (let i = 0; i < 4096; i++) pixelDiff[i] = jobA.gray[i] - jobB.gray[i];
-
-    const heat = PhashCore.computeDctContributionHeatmap(Object.keys(diffWeights).map(Number), diffWeights, pixelDiff);
-
-    const small = document.createElement('canvas');
-    small.width = 64; small.height = 64;
-    const sctx = small.getContext('2d');
-    const imgData = sctx.createImageData(64, 64);
-    for (let i = 0; i < heat.length; i++) {
-      const v = heat[i];
-      imgData.data[i * 4 + 0] = Math.round(255 * v);
-      imgData.data[i * 4 + 1] = 0;
-      imgData.data[i * 4 + 2] = Math.round(200 * (1 - v));
-      imgData.data[i * 4 + 3] = Math.round(200 + 52 * v);
-    }
-    sctx.putImageData(imgData, 0, 0);
+    const small = buildHeatmapCanvas64(jobA, jobB);
+    if (!small) return null;
 
     const big = document.createElement('canvas');
     big.width = size; big.height = size;

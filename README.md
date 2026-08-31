@@ -137,10 +137,14 @@ means at least one mismatch. Pointing `FFMPEG_PATH`/`FFPROBE_PATH` at the
 binaries Stash itself uses takes ffmpeg-version differences out of the
 comparison.
 
-The browser build has the same kind of check: `pnpm run web:build`, then
-`node tools/web-check.js <video> [expectedHash]` drives a headless
-Chromium (set `CHROME=/path/to/chromium` if it isn't on `PATH`) through
-the real ffmpeg.wasm pipeline in the page and reports the hash.
+The two UIs have the same kind of check, driven through the Chrome
+DevTools Protocol: `node tools/ui-check.js <video> [expectedHash]` serves
+`web/dist` (run `pnpm run web:build` first) to a headless Chromium (set
+`CHROME=/path/to/chromium` if it isn't on `PATH`) and runs the real
+ffmpeg.wasm pipeline in the page; `node tools/ui-check.js --electron
+<video> [expectedHash]` launches the actual Electron app (under
+`xvfb-run` when there is no display) and hands it the file. Both wait for
+the hash card, feed the int64 form back into the compare box, and report.
 
 ## Fidelity notes — read this before trusting a "match"
 

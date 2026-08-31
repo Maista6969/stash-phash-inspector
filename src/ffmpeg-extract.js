@@ -107,7 +107,7 @@ async function probeDuration(inputPath) {
  * slowSeek it goes after `-i`, decoding from the start. Stash flips to slow
  * seek for the rest of a video the first time a fast seek fails.
  */
-async function extractFrame(inputPath, timeSeconds, { width, slowSeek = false } = {}) {
+async function extractFrame(inputPath, timeSeconds, { width, slowSeek = false, preview = false } = {}) {
   const seek = ['-ss', formatSeconds(timeSeconds)];
   const args = ['-v', 'error', '-y'];
   if (!slowSeek) args.push(...seek);
@@ -116,6 +116,14 @@ async function extractFrame(inputPath, timeSeconds, { width, slowSeek = false } 
   args.push('-frames:v', '1');
   if (width != null) {
     args.push('-vf', `scale=${width}:-2`);
+  }
+  if (preview) {
+    // Display-only frames stay compressed: a native-resolution RGBA frame
+    // is tens of MB, and 25 of them per video would have to cross IPC and
+    // sit in renderer memory. PNG is lossless, so the zoom view is still
+    // pixel-exact; a low compression level keeps the encode fast.
+    args.push('-c:v', 'png', '-compression_level', '20', '-f', 'image2', 'pipe:1');
+    return { png: await run(getFfmpegPath(), args) };
   }
   // ScreenshotOutputTypeBMP: codec bmp, format rawvideo (byte-identical to
   // image2 for a single frame, but this is the literal Stash invocation).

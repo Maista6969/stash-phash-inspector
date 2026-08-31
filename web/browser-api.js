@@ -72,7 +72,7 @@ async function _probeDuration(ff, name) {
 
 // Same argument list as src/ffmpeg-extract.js extractFrame, with the
 // output going to ffmpeg.wasm's in-memory FS instead of a pipe.
-async function _extractFrame(ff, name, t, { width, slowSeek }, out) {
+async function _extractFrame(ff, name, t, { width, slowSeek, preview }, out) {
   const seek = ['-ss', String(t)];
   const args = ['-v', 'error', '-y'];
   if (!slowSeek) args.push(...seek);
@@ -80,7 +80,10 @@ async function _extractFrame(ff, name, t, { width, slowSeek }, out) {
   if (slowSeek) args.push(...seek);
   args.push('-frames:v', '1');
   if (width != null) args.push('-vf', `scale=${width}:-2`);
-  args.push('-c:v', 'bmp', '-f', 'rawvideo', out);
+  // Previews are display-only and stay PNG-compressed (same as the
+  // Electron build); hash frames use Stash's literal BMP invocation.
+  if (preview) args.push('-c:v', 'png', '-compression_level', '20', '-f', 'image2', out);
+  else args.push('-c:v', 'bmp', '-f', 'rawvideo', out);
   const code = await ff.exec(args);
   if (code !== 0) throw new Error(`ffmpeg exited with code ${code}`);
   let bytes;
@@ -90,7 +93,7 @@ async function _extractFrame(ff, name, t, { width, slowSeek }, out) {
     throw new Error('ffmpeg produced no output frame');
   }
   await ff.deleteFile(out);
-  return BmpDecoder.decodeBMP(bytes);
+  return preview ? { png: bytes } : BmpDecoder.decodeBMP(bytes);
 }
 
 // ---------------------------------------------------------------------------
@@ -156,7 +159,7 @@ window.phashAPI = {
         previewWidth: PREVIEW_WIDTH,
         probeDuration: (name) => _serialized(() => _probeDuration(ff, name)),
         extractFrame: (name, t, opts) =>
-          _serialized(() => _extractFrame(ff, name, t, opts, `${jobId}_${frameCounter++}.bmp`)),
+          _serialized(() => _extractFrame(ff, name, t, opts, `${jobId}_${frameCounter++}.${opts.preview ? 'png' : 'bmp'}`)),
       };
 
       // Payload shapes match main.js's IPC serialisation so renderer.js works unchanged.
@@ -164,9 +167,7 @@ window.phashAPI = {
         if (stage === 'frame') {
           _emit(jobId, 'frame', {
             index: payload.index, total: payload.total, timeSeconds: payload.timeSeconds,
-            previewWidth: payload.previewFrame.width,
-            previewHeight: payload.previewFrame.height,
-            previewData: payload.previewFrame.data,
+            previewPng: payload.previewFrame.png,
           });
         } else if (stage === 'montage') {
           const { montage } = payload;

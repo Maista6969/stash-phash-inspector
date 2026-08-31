@@ -65,6 +65,8 @@ function buildMontage(frames, columns = COLUMNS, rows = ROWS) {
 
   frames.forEach((frame, idx) => {
     const px = frameW * (idx % columns);
+    // Stash's combineImages divides by `rows` here too (not `columns`);
+    // only equivalent because the grid is square. Kept as-is on purpose.
     const py = frameH * Math.floor(idx / rows);
     for (let y = 0; y < frameH; y++) {
       const srcRowStart = y * frameW * 4;

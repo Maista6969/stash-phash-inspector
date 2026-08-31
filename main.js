@@ -48,20 +48,13 @@ ipcMain.handle('run-pipeline', async (event, { jobId, videoPath }) => {
     // Convert typed arrays / BigInt into transferable, renderer-friendly shapes
     let serializable = payload;
     if (stage === 'frame') {
+      // The 160px hash frame itself never crosses IPC -- the renderer only
+      // ever shows it as part of the montage. The preview is PNG bytes.
       serializable = {
         index: payload.index,
         total: payload.total,
         timeSeconds: payload.timeSeconds,
-        width: payload.frame.width,
-        height: payload.frame.height,
-        data: Buffer.from(payload.frame.data.buffer, payload.frame.data.byteOffset, payload.frame.data.byteLength),
-        previewWidth: payload.previewFrame.width,
-        previewHeight: payload.previewFrame.height,
-        previewData: Buffer.from(
-          payload.previewFrame.data.buffer,
-          payload.previewFrame.data.byteOffset,
-          payload.previewFrame.data.byteLength
-        ),
+        previewPng: payload.previewFrame.png,
       };
     } else if (stage === 'montage') {
       serializable = {

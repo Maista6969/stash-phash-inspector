@@ -13,11 +13,12 @@
     "start": "electron . --no-sandbox",
     "test": "node --test \"test/**/*.test.js\"",
     "stash-check": "node tools/stash-check.js",
-    "web:check": "node tools/web-check.js",
     "dist": "electron-builder --publish=never",
     "release": "electron-builder --publish=always",
     "web:build": "pnpm --filter stash-phash-inspector-web run build",
-    "web:start": "pnpm run web:build && pnpm dlx serve web/dist"
+    "web:start": "pnpm run web:build && pnpm dlx serve web/dist",
+    "web:check": "node tools/ui-check.js",
+    "app:check": "node tools/ui-check.js --electron"
   },
   "devDependencies": {
     "electron": "^31.0.0",
@@ -53,15 +54,21 @@
     },
     "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
     "linux": {
-      "target": ["AppImage"],
+      "target": [
+        "AppImage"
+      ],
       "category": "AudioVideo"
     },
     "mac": {
-      "target": ["zip"],
+      "target": [
+        "zip"
+      ],
       "category": "public.app-category.video"
     },
     "win": {
-      "target": ["portable"]
+      "target": [
+        "portable"
+      ]
     }
   }
 }

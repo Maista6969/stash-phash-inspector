@@ -75,7 +75,7 @@ async function fetchFiles(url) {
   for (const f of files) {
     const started = Date.now();
     try {
-      const { duration, result } = await runPipeline(f.path);
+      const { duration, result } = await runPipeline(f.path, () => {}, { preview: false });
       const distance = hammingDistance(result.hash, BigInt('0x' + f.phash));
       if (distance !== 0) failures++;
       const secs = ((Date.now() - started) / 1000).toFixed(1);

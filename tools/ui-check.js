@@ -1,16 +1,24 @@
 'use strict';
 
 /**
- * End-to-end check of the browser build: serves web/dist plus one video
- * over HTTP, drives a headless Chromium through the Chrome DevTools
- * Protocol, runs the video through the real ffmpeg.wasm pipeline in the
- * page, and prints the resulting hash (and the Hamming distance if an
- * expected hash is given).
+ * End-to-end check of the real UI, driven through the Chrome DevTools
+ * Protocol: loads a video, waits for the hash card, types the int64 form
+ * of the hash back into the compare box, and prints the result (plus the
+ * Hamming distance if an expected hash is given).
  *
- * Usage: node tools/web-check.js <video> [expectedHex] [--chrome /path/to/chromium]
+ *   node tools/ui-check.js <video> [expectedHex]              browser build
+ *   node tools/ui-check.js --electron <video> [expectedHex]   Electron app
  *
- * Needs: `pnpm run web:build` already run, and a Chromium/Chrome binary
- * (CHROME env var, --chrome, or `chromium` / `google-chrome` on PATH).
+ * Browser mode serves web/dist (run `pnpm run web:build` first) plus the
+ * video over HTTP to a headless Chromium (CHROME env var, --chrome, or
+ * `chromium` / `google-chrome` on PATH) and runs the real ffmpeg.wasm
+ * pipeline in the page.
+ *
+ * Electron mode launches the actual app (`electron .`) with remote
+ * debugging enabled and hands it the video path, so the native ffmpeg
+ * path, IPC serialisation and renderer all get exercised. Without a
+ * DISPLAY it runs under `xvfb-run` if that is on PATH.
+ *
  * No npm dependencies -- Node 22+'s built-in fetch/WebSocket are enough.
  */
 
@@ -27,9 +35,10 @@ const MIME = {
 };
 
 function parseArgs(argv) {
-  const out = { video: null, expected: null, chrome: process.env.CHROME || null };
+  const out = { video: null, expected: null, chrome: process.env.CHROME || null, electron: false };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--chrome') out.chrome = argv[++i];
+    else if (argv[i] === '--electron') out.electron = true;
     else if (!out.video) out.video = argv[i];
     else if (!out.expected) out.expected = argv[i];
   }
@@ -86,22 +95,43 @@ async function cdp(wsUrl) {
   };
 }
 
-(async () => {
-  const opts = parseArgs(process.argv.slice(2));
-  if (!opts.video) {
-    console.error('Usage: node tools/web-check.js <video> [expectedHex] [--chrome path]');
-    process.exit(1);
-  }
-  const dist = path.join(__dirname, '..', 'web', 'dist');
-  if (!fs.existsSync(path.join(dist, 'index.html'))) throw new Error('web/dist missing -- run `pnpm run web:build` first');
-  const chrome = findChrome(opts.chrome);
-  const { server, port, videoName } = await serve(dist, path.resolve(opts.video));
-  const userDataDir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'phash-web-check-'));
-
-  const proc = spawn(chrome, [
+function launchBrowser(chrome, userDataDir) {
+  return spawn(chrome, [
     '--headless=new', '--no-sandbox', '--disable-gpu', '--remote-debugging-port=0',
     `--user-data-dir=${userDataDir}`, 'about:blank',
   ], { stdio: ['ignore', 'ignore', 'pipe'] });
+}
+
+function launchElectron() {
+  const electron = require('electron'); // the npm package exports the binary path
+  const args = ['.', '--no-sandbox', '--remote-debugging-port=0'];
+  const cwd = path.join(__dirname, '..');
+  if (process.env.DISPLAY || process.env.WAYLAND_DISPLAY) {
+    return spawn(electron, args, { cwd, stdio: ['ignore', 'ignore', 'pipe'] });
+  }
+  // Electron needs a display even for an automated run; Xvfb provides one.
+  return spawn('xvfb-run', ['-a', electron, ...args], { cwd, stdio: ['ignore', 'ignore', 'pipe'] });
+}
+
+(async () => {
+  const opts = parseArgs(process.argv.slice(2));
+  if (!opts.video) {
+    console.error('Usage: node tools/ui-check.js [--electron] <video> [expectedHex] [--chrome path]');
+    process.exit(1);
+  }
+  const videoPath = path.resolve(opts.video);
+  const dist = path.join(__dirname, '..', 'web', 'dist');
+  let server = null, port = null, videoName = path.basename(videoPath);
+  const userDataDir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'phash-ui-check-'));
+
+  let proc;
+  if (opts.electron) {
+    proc = launchElectron();
+  } else {
+    if (!fs.existsSync(path.join(dist, 'index.html'))) throw new Error('web/dist missing -- run `pnpm run web:build` first');
+    ({ server, port, videoName } = await serve(dist, videoPath));
+    proc = launchBrowser(findChrome(opts.chrome), userDataDir);
+  }
   let devtoolsUrl = null;
   proc.stderr.on('data', (d) => {
     const m = /DevTools listening on (ws:\/\/\S+)/.exec(d.toString());
@@ -112,35 +142,42 @@ async function cdp(wsUrl) {
     if (cleaned) return;
     cleaned = true;
     proc.kill();
-    server.close();
+    if (server) server.close();
     // Chromium keeps writing to its profile for a moment after SIGTERM.
     fs.rmSync(userDataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
   };
   process.on('exit', cleanup);
 
-  for (let i = 0; i < 100 && !devtoolsUrl; i++) await new Promise((r) => setTimeout(r, 100));
-  if (!devtoolsUrl) throw new Error('Chromium did not report a DevTools URL');
+  for (let i = 0; i < 300 && !devtoolsUrl; i++) await new Promise((r) => setTimeout(r, 100));
+  if (!devtoolsUrl) throw new Error(`${opts.electron ? 'Electron' : 'Chromium'} did not report a DevTools URL`);
   const httpBase = `http://${devtoolsUrl.split('/')[2]}`;
-  const targets = await (await fetch(`${httpBase}/json`)).json();
-  const page = targets.find((t) => t.type === 'page');
+  let page = null;
+  for (let i = 0; i < 100 && !page; i++) {
+    const targets = await (await fetch(`${httpBase}/json`)).json();
+    page = targets.find((t) => t.type === 'page' && (!opts.electron || t.url.startsWith('file:')));
+    if (!page) await new Promise((r) => setTimeout(r, 100));
+  }
+  if (!page) throw new Error('No page target found');
   const client = await cdp(page.webSocketDebuggerUrl);
 
   await client.send('Runtime.enable');
   await client.send('Page.enable');
-  await client.send('Page.navigate', { url: `http://127.0.0.1:${port}/` });
+  if (!opts.electron) await client.send('Page.navigate', { url: `http://127.0.0.1:${port}/` });
   for (let i = 0; i < 100; i++) {
-    const { result } = await client.send('Runtime.evaluate', { expression: 'document.readyState === "complete" && !!window.phashAPI && !!window.PipelineCore' });
+    const { result } = await client.send('Runtime.evaluate', { expression: 'document.readyState === "complete" && !!window.phashAPI && typeof addVideo === "function"' });
     if (result.value) break;
     await new Promise((r) => setTimeout(r, 100));
   }
 
   // Drive the same public API the renderer uses; addVideo() then runs the
   // full UI path too, so a hash card appearing means the page really works.
-  const expression = `(async () => {
-    const res = await fetch('/__video/${encodeURIComponent(videoName)}');
+  const load = opts.electron
+    ? `addVideo(${JSON.stringify(videoPath)});`
+    : `const res = await fetch('/__video/${encodeURIComponent(videoName)}');
     const file = new File([await res.blob()], ${JSON.stringify(videoName)});
-    const [name] = window.phashAPI.registerFiles([file]);
-    addVideo(name);
+    addVideo(window.phashAPI.registerFiles([file])[0]);`;
+  const expression = `(async () => {
+    ${load}
     const started = Date.now();
     while (Date.now() - started < 600000) {
       const hex = document.querySelector('.hash-hex').textContent;
