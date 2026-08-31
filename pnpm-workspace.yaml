@@ -1,3 +1,13 @@
 packages:
   - '.'
   - 'web'
+
+# pnpm 10+ refuses to run dependency install scripts unless reviewed here.
+# electron and ffmpeg-static download their binaries in postinstall; without
+# them there is no Electron to run and packaged builds ship without ffmpeg.
+# electron-winstaller (pulled in by electron-builder) is for Squirrel
+# installers, which this project doesn't build.
+allowBuilds:
+  electron: true
+  ffmpeg-static: true
+  electron-winstaller: false

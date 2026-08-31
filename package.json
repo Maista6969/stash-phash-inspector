@@ -4,7 +4,7 @@
   "description": "Standalone tool to visualize and reproduce Stash's video perceptual hash algorithm",
   "main": "main.js",
   "private": true,
-  "packageManager": "pnpm@9.15.0",
+  "packageManager": "pnpm@11.9.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/Maista6969/stash-phash-inspector.git"
@@ -21,8 +21,8 @@
     "app:check": "node tools/ui-check.js --electron"
   },
   "devDependencies": {
-    "electron": "^31.0.0",
-    "electron-builder": "^24.13.3"
+    "electron": "^41.0.0",
+    "electron-builder": "^26.0.0"
   },
   "optionalDependencies": {
     "ffmpeg-static": "^5.2.0",
