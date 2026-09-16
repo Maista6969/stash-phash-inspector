@@ -125,6 +125,11 @@ window.phashAPI = {
     });
   },
 
+  /** Dropped File objects are usable directly in the browser. */
+  acceptDroppedFiles(files) {
+    return window.phashAPI.registerFiles(files);
+  },
+
   /** Registers File objects (from a picker or a drop) and returns their names. */
   registerFiles(files) {
     const names = [];

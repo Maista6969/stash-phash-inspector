@@ -120,6 +120,46 @@ document.getElementById('add-videos').addEventListener('click', async () => {
   for (const p of paths) addVideo(p);
 });
 
+// Drag-and-drop anywhere on the page. The counter handles the enter/leave
+// pairs that fire for every child element crossed while dragging.
+(function initDragAndDrop() {
+  let depth = 0;
+  document.addEventListener('dragenter', (e) => {
+    if (!e.dataTransfer || !Array.from(e.dataTransfer.types).includes('Files')) return;
+    e.preventDefault();
+    depth++;
+    document.body.classList.add('dropping');
+  });
+  document.addEventListener('dragover', (e) => { e.preventDefault(); });
+  document.addEventListener('dragleave', () => {
+    depth = Math.max(0, depth - 1);
+    if (depth === 0) document.body.classList.remove('dropping');
+  });
+  document.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    depth = 0;
+    document.body.classList.remove('dropping');
+    const files = Array.from(e.dataTransfer ? e.dataTransfer.files : []);
+    if (!files.length) return;
+    const paths = await window.phashAPI.acceptDroppedFiles(files);
+    for (const p of paths) addVideo(p);
+  });
+}());
+
+function removeVideo(jobId) {
+  const job = jobs.get(jobId);
+  if (!job) return;
+  // A job still extracting keeps running in the backend until it finishes;
+  // its events are simply ignored from here on.
+  job.unsubscribe();
+  job.failed = true;
+  for (const el of Object.values(job.elements)) el.remove();
+  syncedFilmstrips.delete(job.elements.filmstrip);
+  jobs.delete(jobId);
+  closeModal();
+  updateComparisonTable();
+}
+
 function baseName(p) {
   return p.split(/[\\/]/).pop();
 }
@@ -173,6 +213,7 @@ function addVideo(videoPath) {
   const filmstrip = row.querySelector('.filmstrip');
   filmstripRowsEl.appendChild(row);
   registerFilmstripSync(filmstrip);
+  row.querySelector('.remove-video').addEventListener('click', () => removeVideo(jobId));
 
   // --- Stage 2: montage card ---
   const montageNode = montageCardTemplate.content.cloneNode(true);
@@ -201,6 +242,7 @@ function addVideo(videoPath) {
   const goldenResult = hashCard.querySelector('.golden-result');
   hashCardsEl.appendChild(hashCard);
 
+  job.elements = { row, filmstrip, montageCard, dctCard, hashCard };
   statusEl.textContent = 'Queued…';
 
   const unsubscribe = window.phashAPI.onProgress(jobId, ({ stage, payload }) => {
@@ -295,7 +337,10 @@ function addVideo(videoPath) {
     goldenResult.className = `golden-result ${distance === 0 ? 'match' : 'mismatch'}`;
   });
 
+  job.unsubscribe = unsubscribe;
+
   enqueueJob(() => {
+    if (!jobs.has(jobId)) return Promise.resolve(); // removed while queued
     statusEl.textContent = 'Probing duration…';
     return window.phashAPI.runPipeline(jobId, videoPath).then((res) => {
       // Failures normally arrive as an 'error' progress event; this only

@@ -56,6 +56,12 @@ pixel-accurate. It's a separate `ffmpeg` call with no scale filter at all
 — the 160px frame that actually gets hashed is extracted independently
 and never touches the display path.
 
+## Adding videos
+
+Use the button or drop files anywhere on the page. Each row has a Remove
+button. Two videos are processed at a time; the rest wait with a "Queued"
+status.
+
 ## Zooming in
 
 Everything in the app is clickable:
@@ -163,15 +169,16 @@ Every stage in `shared/phash-core.js` has a `CONFIDENCE` comment; summary:
 | DCT-II                  | High       | Line-for-line port of `transforms/static.go`'s `forwardDCT64`/`32`/`16`/`8`/`4` (Lee's recursive algorithm) and its exact constant tables, not a mathematically-equivalent-but-differently-ordered re-derivation.                                                                                        |
 | Median + bit packing    | High       | Read directly from `hashcompute.go` and `etcs/utils.go`: median is the average of the two middle values of the 64 DCT coefficients (`quickSelectMedian`'s even-length branch), and `if p > median { leftShiftSet(64-idx-1) }`.                                                                          |
 
-**This has been cross-checked against the real upstream Go libraries, not
-just read from source.** `shared/phash-core.js` was validated by building
-an actual local Go module tree with unmodified copies of `nfnt/resize`,
-`corona10/goimagehash`, and `disintegration/imaging` fetched straight from
-GitHub, computing `goimagehash.PerceptionHash` on 25+ synthetic test
-images (random noise at several sizes/aspect ratios, plus solid colors and
-extreme aspect ratios), and diffing the result against this JS port
-byte-for-byte. All cases now match bit-for-bit. That process actually
-caught two real bugs along the way, not just approximation gaps:
+**This is cross-checked against the real upstream Go libraries on every
+test run, not just read from source.** `pnpm test` hashes a set of
+deterministic synthetic images (uniform noise at several sizes and aspect
+ratios, solid colours, gradients, tiled montages) plus a real collage
+exported from a video, and compares each result with
+`test/fixtures/expected.json`, which was produced by
+`goimagehash.PerceptionHash` itself via `tools/go-reference` with the
+library versions pinned to Stash's `go.mod`. All cases match bit-for-bit.
+Building that comparison originally caught two real bugs, not just
+approximation gaps:
 
 - The 64×64 resize previously re-normalized filter weights to sum to
   exactly 1.0 in floating point, whereas `nfnt/resize` quantizes weights
@@ -278,54 +285,51 @@ priority and skip these packages entirely) can omit them cleanly with
 actual binary to run in this order: `FFMPEG_PATH`/`FFPROBE_PATH` env vars
 → these bundled packages → `ffmpeg`/`ffprobe` on `PATH`.
 
-### Honesty about what's been tested where
+### What has actually been verified
 
-`shared/phash-core.js` has been cross-validated against a real local Go
-build of unmodified `nfnt/resize`, `corona10/goimagehash`, and
-`disintegration/imaging` (fetched directly from GitHub, not reconstructed
-from memory) across 25+ synthetic test images — random noise at several
-sizes and aspect ratios, solid colors, and extreme aspect ratios — and
-every one now matches the JS output bit-for-bit. `pnpm install`, the
-Electron app's own syntax check (`pnpm test`), a real Linux `AppImage`
-build via `electron-builder`, and the `web/build.mjs` static-site build
-have all actually been run in this environment, not just written and
-assumed to work. The Windows `portable` target was **not** built
-end-to-end here — cross-compiling a Windows target from Linux needs Wine,
-which isn't installed in this sandbox — but the `release.yml` workflow
-builds it natively on a `windows-latest` GitHub Actions runner instead of
-cross-compiling, which is the standard, more reliable way to do this
-anyway; the same electron-builder config that already produced a working
-Linux AppImage here is what runs on that runner.
+- `pnpm test`: golden hashes against the pinned Go libraries, BMP decoder,
+  pipeline seek-fallback policy, hash input parsing, and a parse check of
+  the browser-only files. Runs in both GitHub workflows.
+- `tools/stash-check.js` against a live Stash dev instance: every hashed
+  library file matches bit-for-bit, both with Stash's own ffmpeg 6.1
+  binary and with ffmpeg 8.1.1. The library includes synthetic clips whose
+  every frame differs, chosen so the duration-rounding rule flips 14–28
+  bits if it is wrong.
+- `tools/ui-check.js` in both modes: the browser build (ffmpeg.wasm in a
+  headless Chromium) and the real Electron app (under Xvfb) load a video,
+  render 25 frames, produce the expected hash, accept the int64 form in
+  the compare box, and clean up on Remove.
+- A Linux AppImage built with electron-builder.
 
-What hasn't been done in this sandbox: an actual click-through of the
-Electron UI or the web UI in a real browser (no display here), and an
-end-to-end run against a real video file (no `ffmpeg`/sample video
-present). Both pipelines are unchanged by this round of work aside from
-the `main.js` module-system fix, so give the app a real run — and ideally
-`tools/self-test.js` against a video whose Stash phash you already know
-— before relying on either the app or the pnpm scripts you haven't
-personally executed yet.
+Not exercised locally: the Windows and macOS release targets (built
+natively on GitHub runners by `release.yml`).
 
 ## Project layout
 
 ```
-main.js                  Electron main process (spawns ffmpeg, runs pipeline, IPC)
-preload.js                Context-isolated IPC bridge
-flake.nix                  Nix devShell (NixOS-friendly Electron + ffmpeg)
-shared/
-  phash-core.js             THE algorithm: montage, resize, grayscale, DCT, hashing (UMD)
-  bmp.js                     Minimal BMP decoder (UMD, DataView-based)
+main.js                    Electron main process (runs the pipeline, IPC)
+preload.js                 Context-isolated IPC bridge
+flake.nix                  Nix devShell (NixOS-friendly Electron + ffmpeg + go)
+shared/                    Loaded by both builds (UMD: require() in Node, globals in the browser)
+  phash-core.js            THE algorithm: duration rounding, timestamps, montage, resize, DCT, hashing
+  pipeline-core.js         Stage orchestration + slow-seek fallback, bound to a backend by deps
+  bmp.js                   Minimal BMP decoder
+  hash-format.js           hex / int64 parsing for typed-in hashes
 src/
-  ffmpeg-extract.js          ffprobe/ffmpeg invocations + binary resolution
-  pipeline.js                 Orchestrates the above with progress callbacks (Electron only)
-  index.html / renderer.js / styles.css   Electron UI
+  ffmpeg-extract.js        Native ffprobe/ffmpeg invocations + binary resolution
+  pipeline.js              Node binding of pipeline-core
+  index.html / renderer.js / styles.css   The UI (renderer.js and styles.css are shared with web/)
 web/
-  index.html / app.js / styles.css   Browser UI + ffmpeg.wasm pipeline
-  build.mjs                   Assembles web/dist for GitHub Pages
+  index.html               Browser shell
+  browser-api.js           ffmpeg.wasm binding of pipeline-core, exposes window.phashAPI
+  build.mjs                Assembles web/dist for GitHub Pages
+test/                      node --test suite; fixtures/ has the Go-generated golden hashes
 tools/
-  self-test.js               Headless CLI runner
-  go-reference/main.go        Optional gold-standard check using the real Go libs
+  self-test.js             Headless CLI: hash one video, optionally compare
+  stash-check.js           Hash everything a live Stash instance has, compare per file
+  ui-check.js              Drive the web build or the Electron app end to end via CDP
+  go-reference/            Real goimagehash/nfnt-resize reference (pinned to Stash's versions)
 .github/workflows/
-  release.yml                 Tag push -> multi-platform Electron build -> GitHub Release
-  pages.yml                    Push to main -> build web/ -> deploy to GitHub Pages
+  release.yml              Tag push -> multi-platform Electron build -> GitHub Release
+  pages.yml                Push to main -> build web/ -> deploy to GitHub Pages
 ```

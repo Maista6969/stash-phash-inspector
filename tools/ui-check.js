@@ -189,12 +189,15 @@ function launchElectron() {
         input.value = document.querySelector('.hash-int64').textContent;
         input.dispatchEvent(new Event('change'));
         await new Promise((r) => setTimeout(r, 200));
-        return {
+        const out = {
           hex, status,
           backend: document.getElementById('backend-info').textContent,
           frames: document.querySelectorAll('.filmstrip figure').length,
           golden: document.querySelector('.golden-result').textContent,
         };
+        document.querySelector('.remove-video').click();
+        out.rowsAfterRemove = document.querySelectorAll('.filmstrip-row, .montage-card, .dct-card, .hash-card').length;
+        return out;
       }
       if (status.startsWith('Error')) return { error: status };
       await new Promise((r) => setTimeout(r, 200));
@@ -216,6 +219,11 @@ function launchElectron() {
   console.log(`frames rendered: ${out.frames}`);
   console.log(`hash hex: ${out.hex}`);
   console.log(`int64 round-trip via the compare box: ${out.golden}`);
+  console.log(`elements left after Remove: ${out.rowsAfterRemove}`);
+  if (out.rowsAfterRemove !== 0) {
+    console.error('FAILED: Remove left cards behind');
+    process.exit(1);
+  }
   if (!out.golden.startsWith('exact match')) {
     console.error('FAILED: the compare box did not recognise the int64 form of the hash');
     process.exit(1);

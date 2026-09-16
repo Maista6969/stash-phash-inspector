@@ -1,6 +1,6 @@
 'use strict';
 
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('phashAPI', {
   chooseVideos: () => ipcRenderer.invoke('choose-videos'),
@@ -15,4 +15,9 @@ contextBridge.exposeInMainWorld('phashAPI', {
   },
 
   describeBackend: () => ipcRenderer.invoke('describe-backend'),
+
+  // Dropped File objects -> filesystem paths. Electron >= 32 removed the
+  // non-standard File.path; webUtils is the sanctioned replacement and is
+  // only reachable from the preload side of the bridge.
+  acceptDroppedFiles: (files) => files.map((f) => webUtils.getPathForFile(f)).filter(Boolean),
 });
