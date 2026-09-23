@@ -1,6 +1,6 @@
 {
   "name": "stash-phash-inspector",
-  "version": "0.1.0",
+  "version": "0.5.0",
   "description": "Standalone tool to visualize and reproduce Stash's video perceptual hash algorithm",
   "main": "main.js",
   "private": true,
