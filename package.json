@@ -1,6 +1,6 @@
 {
   "name": "stash-phash-inspector",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Standalone tool to visualize and reproduce Stash's video perceptual hash algorithm",
   "main": "main.js",
   "private": true,
@@ -25,8 +25,7 @@
     "electron-builder": "^26.0.0"
   },
   "optionalDependencies": {
-    "ffmpeg-static": "^5.2.0",
-    "ffprobe-static": "^3.1.0"
+    "ffmpeg-ffprobe-static": "6.1.2-rc.1"
   },
   "build": {
     "appId": "app.stash.phash-inspector",
@@ -40,12 +39,10 @@
       "src/**/*",
       "shared/**/*",
       "package.json",
-      "node_modules/ffmpeg-static/**/*",
-      "node_modules/ffprobe-static/**/*"
+      "node_modules/ffmpeg-ffprobe-static/**/*"
     ],
     "asarUnpack": [
-      "node_modules/ffmpeg-static/**/*",
-      "node_modules/ffprobe-static/**/*"
+      "node_modules/ffmpeg-ffprobe-static/**/*"
     ],
     "publish": {
       "provider": "github",

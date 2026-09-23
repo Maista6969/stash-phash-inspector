@@ -9,21 +9,26 @@ const { roundDurationLikeStash } = require('../shared/phash-core');
  *   1. FFMPEG_PATH / FFPROBE_PATH env vars -- explicit override. The Nix
  *      devShell sets these to the Nix store's ffmpeg so local development
  *      never depends on the optional npm-downloaded binaries below.
- *   2. The bundled `ffmpeg-static` / `ffprobe-static` npm packages, if
- *      installed -- these ship a real binary and are what packaged
- *      Electron releases use so end users don't need ffmpeg installed at
- *      all. They're `optionalDependencies` (see package.json) precisely
- *      so environments that don't want them (e.g. NixOS, where a
- *      non-Nix-built binary may not run) can skip the install cleanly.
+ *   2. The bundled `ffmpeg-ffprobe-static` npm package, if installed --
+ *      a matched ffmpeg + ffprobe pair from the 6.1 line, the same line
+ *      Stash downloads for itself. Packaged Electron releases use these so
+ *      end users don't need ffmpeg installed. It's an `optionalDependency`
+ *      (see package.json) so environments that don't want it (e.g. NixOS,
+ *      where a non-Nix-built binary may not run) can skip it cleanly.
+ *
+ *      The pair matters: ffmpeg's decoder output is identical from 4.4
+ *      through 9.0, but ffprobe 4.x reports some MP4 durations a few ms
+ *      differently from 6.x+, which shifts every sample time. The
+ *      previous `ffprobe-static` package shipped ffprobe 4.0.2 and got a
+ *      hash 22 bits off on such a file.
  *   3. Plain 'ffmpeg' / 'ffprobe' resolved from PATH, as a last resort.
  */
-function resolveBinary(envVar, staticModuleName, fallbackCommand) {
+function resolveBinary(envVar, staticExportName, fallbackCommand) {
   if (process.env[envVar]) return process.env[envVar];
 
   try {
     // eslint-disable-next-line import/no-extraneous-dependencies
-    const resolved = require(staticModuleName);
-    let binPath = typeof resolved === 'string' ? resolved : resolved.path;
+    let binPath = require('ffmpeg-ffprobe-static')[staticExportName];
     if (binPath) {
       // When packaged, this path points inside app.asar, which isn't
       // executable -- electron-builder unpacks these two modules (see
@@ -42,11 +47,11 @@ function resolveBinary(envVar, staticModuleName, fallbackCommand) {
 let ffmpegPath;
 let ffprobePath;
 function getFfmpegPath() {
-  if (!ffmpegPath) ffmpegPath = resolveBinary('FFMPEG_PATH', 'ffmpeg-static', 'ffmpeg');
+  if (!ffmpegPath) ffmpegPath = resolveBinary('FFMPEG_PATH', 'ffmpegPath', 'ffmpeg');
   return ffmpegPath;
 }
 function getFfprobePath() {
-  if (!ffprobePath) ffprobePath = resolveBinary('FFPROBE_PATH', 'ffprobe-static', 'ffprobe');
+  if (!ffprobePath) ffprobePath = resolveBinary('FFPROBE_PATH', 'ffprobePath', 'ffprobe');
   return ffprobePath;
 }
 

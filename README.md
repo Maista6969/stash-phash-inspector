@@ -1,14 +1,124 @@
 # Stash pHash Inspector
 
-A standalone Electron app that reproduces and visualizes
-[Stash](https://github.com/stashapp/stash)'s video perceptual hash
-algorithm (`pkg/hash/videophash/phash.go`), stage by stage, entirely on
-your machine. Nothing is uploaded anywhere.
+A small desktop and browser tool that reproduces [Stash](https://github.com/stashapp/stash)'s video fingerprint (also known as the PHASH, the perceptual hash) one stage at a time, so you can see _why_ two videos got the
+fingerprints they did. Everything runs on your own machine; nothing is uploaded anywhere.
 
-## Setup
+Try it in the browser at [maista6969.github.io/stash-phash-inspector](https://maista6969.github.io/stash-phash-inspector/), or grab a desktop build from the [releases page](https://github.com/Maista6969/stash-phash-inspector/releases).
 
-**On NixOS**, use the included flake instead of a raw `pnpm install` for
-Electron itself:
+## Why this exists
+
+Stash's duplicate finder works off a 64-bit perceptual hash, and most of the time it does what you'd hope: two encodes of the same video land a
+handful of bits apart and get flagged. But when it goes wrong there is nothing to look at. Two files that are obviously the same come back 20
+bits apart, or a file you re-encoded at a different resolution hashes to a completely different value, and all you have is a pair of hex strings.
+Is it a bad frame sample? A scene cut that landed differently? A different duration reported by ffprobe? Stash doesn't say, because it was never
+meant to explain itself. I wanted to see the 25 frames it picked, the collage it built from them, and the exact coefficients that decided each bit,
+side by side for both files, and to be able to trust that what I was looking at was really what Stash computed and not an approximation of it.
+So this tool reproduces the algorithm bit for bit and draws every intermediate step.
+
+## How it works
+
+Add one or more videos with the button, or drop them onto the window. For each one the tool does what Stash does:
+
+1. **Probes the duration** with ffprobe and works out the 25 sample points Stash uses: skip the first and last 5%, then spread evenly
+2. **Grabs one frame at each point** with ffmpeg, scaled to 160 pixels wide, exactly the way Stash does it. These show up as a filmstrip
+3. **Tiles the 25 frames into a 5x5 collage.** This collage is the only thing that ever gets hashed
+4. **Hashes the collage:** shrink to 64×64, convert to grey, take a discrete cosine transform, keep the 8×8 lowest frequencies, and set a
+   bit for every coefficient above the median. That gives the 64-bit fingerprint, shown as hex and as the signed integer Stash stores
+
+The page is organised by stage rather than by video, so all filmstrips sit together, then all collages, then all frequency grids, then all hashes.
+When you're comparing two files, that keeps the things you want to compare next to each other. Filmstrips scroll in sync.
+
+Everything is clickable:
+
+- **Click a frame** for a before/after slider between two videos at the same sample index, at the source's full resolution.
+  Arrow keys step through the samples.
+- **Click a collage** for the same slider on the actual hashed pixels, with an optional heatmap showing which regions pushed the two
+  fingerprints apart
+- **Click a frequency grid** to see exactly which of the 64 bits flipped between two videos
+- **Paste a known fingerprint** from Stash (hex or the signed integer) under any hash to check for an exact match
+
+Two videos are processed at a time; the rest queue. Each row has a Remove button. The header shows which ffmpeg build is doing the
+decoding, which can really matter.
+
+## Limitations
+
+**ffmpeg's decoder is not the risk; ffprobe's duration can be.** I
+expected different ffmpeg versions to produce slightly different pixels.
+They don't, at least not for H.264: the 160-pixel frames from ffmpeg
+4.4, 6.1, 7.0, 7.1, 8.1 and 9.0 are byte-for-byte identical on every
+frame of every file tested, and all of them reproduce Stash's hashes.
+What did differ was ffprobe. The 4.x series reports the duration of some
+MP4s a few milliseconds differently from 6.x and later, and because
+every sample time is a fraction of that number, a 4.x ffprobe put three
+samples on the wrong frame of a test clip and got a hash 22 bits away.
+Use an ffprobe from the same era as Stash's (6.x or newer). The header
+shows which versions are in use, and `FFMPEG_PATH` / `FFPROBE_PATH`
+override them.
+
+**Duration is the sensitive input.** All 25 sample times are a fraction of the probed duration, so if ffprobe reports a slightly different
+duration than it did when Stash scanned the file (variable frame rate, odd containers), the samples shift and can land on the other side of a
+scene cut. The app shows the duration it used so you can check it against Stash.
+
+**The browser build is slower and its previews are smaller.** ffmpeg.wasm runs single-threaded, and previews are capped at 480 pixels wide to keep
+memory in check. The hashed frames themselves are identical. Use the desktop build for full-resolution comparison.
+
+**It tracks the current Stash algorithm.** If Stash changes [how it generates the sprite or hashes it](https://github.com/stashapp/stash/issues/3722),
+this will need updating. The constants and commands all live in one file with comments pointing at the Stash source they mirror.
+
+**Release builds are unsigned**, and the Windows and macOS packages are produced by CI without being launched by a person. The Linux AppImage has been run.
+
+## Technical details
+
+If you only want to use the tool you can stop here. This section is for anyone who wants to know what "bit for bit" actually rests on.
+
+### One copy of the algorithm
+
+`shared/phash-core.js` is the whole algorithm, and it is the only copy. The Electron app requires it; the browser build copies the same file into
+the page. The stage orchestration (probe, sample, seek fallback, collage, hash) is likewise one file, `shared/pipeline-core.js`, that both builds
+plug their own ffmpeg into. A fix only ever has to happen once.
+
+### The details that turned out to matter
+
+Most of the algorithm is a straightforward port. A few things are not obvious from a description of pHash:
+
+- **Duration is rounded to two decimals before anything else.** Stash rounds the ffprobe duration when it scans a file, and the sample times
+  are computed from that rounded value. Skipping this moves every sample by up to 5 ms. That sounds like nothing, but on synthetic clips where
+  every frame differs it flips 14 to 28 of the 64 bits, and I verified against a running Stash that the rounded version is the right one.
+- **The ffmpeg command is copied, not approximated.** Fast seek before the input, one frame, `scale=160:-2`, BMP out over `rawvideo`. If a fast
+  seek fails, Stash retries that frame with an accurate seek and keeps accurate seeking for the rest of that video, so this does too. Six
+  ffmpeg releases from 4.4 to 9.0 give identical bytes for this command on H.264 input, so the decode step is stable across versions.
+- **The 64×64 shrink is integer arithmetic.** Stash uses the `nfnt/resize` Go library, which quantises its bilinear weights to 16-bit integers,
+  truncates rather than rounds, and divides by the sum of the quantised weights it actually used. A floating-point resize gives different bytes
+  on some pixels, and a different byte can flip a bit.
+- **The DCT is a specific algorithm, not just the DCT.** `goimagehash` uses Lee's recursive fast DCT with hard-coded constants. Any
+  mathematically equivalent DCT can round differently in the last digit, and on noisy input that is enough to move a coefficient across the
+  median. This port does the same operations in the same order.
+- **The median includes the DC term** and is the mean of the two middle values of all 64 coefficients, which is what the Go code does, even
+  though textbook pHash excludes DC.
+- **A quirk is kept on purpose.** Stash's collage code divides by the row count where it means the column count. It only works because the grid
+  is square, and this port does the same thing so the two can't drift.
+
+### How it is verified
+
+- `pnpm test` hashes a fixed set of synthetic images (noise at many sizes and aspect ratios, solid colours, gradients, tiled collages) plus
+  a real collage exported from a video, and checks every hash against values produced by the actual Go libraries Stash uses, pinned to the
+  versions in Stash's `go.mod`. The Go program that generates those values is in `tools/go-reference`.
+- `tools/stash-check.js` asks a running Stash instance for every file it has fingerprinted, hashes each one with this tool, and reports the
+  distance. On the development library, every file matches with Stash's own ffmpeg 6.1 and with ffmpeg 6.1.6, 7.0, 7.1, 8.1 and 9.0. ffmpeg
+  4.4 matches too, but only when paired with a newer ffprobe.
+- `tools/ui-check.js` drives the real UI, both the browser build in a headless Chromium and the Electron app, through loading a video,
+  rendering, hashing, and the compare box.
+
+### Setup
+
+Requires `ffmpeg` and `ffprobe` on your `PATH` for development; packaged releases bundle their own.
+
+```
+pnpm install
+pnpm start
+```
+
+On NixOS, use the flake so Electron and ffmpeg come from the Nix store:
 
 ```
 nix develop
@@ -16,320 +126,47 @@ pnpm install
 pnpm start
 ```
 
-The flake provides `nodejs`, `pnpm`, `ffmpeg`/`ffprobe`, and a nixpkgs-built
-`electron` binary (wired up via `ELECTRON_OVERRIDE_DIST_PATH` so `pnpm`'s
-own `electron` package never needs to download a binary). `pnpm start`
-launches with `--no-sandbox`, since Chromium's setuid sandbox helper
-generally isn't set up in a Nix devShell — this only disables the OS-level
-process sandbox for this local dev tool; the app loads no remote content.
+The flake sets `ELECTRON_OVERRIDE_DIST_PATH`, `FFMPEG_PATH`, and `FFPROBE_PATH`; `pnpm start` passes `--no-sandbox` because the Chromium
+setuid helper isn't set up in a dev shell.
 
-**Everywhere else:**
+Useful commands:
 
 ```
-pnpm install
-pnpm start
+pnpm test                                  # unit tests + golden hashes
+node tools/self-test.js <video> [hash]     # hash one file headlessly
+node tools/stash-check.js --url http://localhost:9999/graphql
+pnpm run web:build && pnpm run web:start   # browser build, served locally
+node tools/ui-check.js [--electron] <video> [hash]
 ```
 
-This is a pnpm workspace (`pnpm-workspace.yaml`) covering the root Electron
-app and `web/` (the GitHub Pages build) — one lockfile, one `pnpm install`
-at the repo root sets both up. If you only care about the web build, `cd
-web && pnpm install` still works on its own.
-
-Requires `ffmpeg` and `ffprobe` on your `PATH` either way (the same
-requirement Stash itself has).
-
-## Layout
-
-The app is organized by _pipeline stage_, not by video: all videos'
-frame filmstrips are grouped together, then all collages, then all DCT
-heatmaps, then all hashes. That's deliberate — the point of the tool is
-comparing two similar videos, and putting the same stage next to each
-other (filmstrips stacked directly above one another, collages side by
-side) means your eye travels a few pixels instead of a full page scroll.
-Filmstrip rows also scroll in sync: dragging any one of them scrolls all
-of them together, so sample index N lines up across videos.
-
-The filmstrip thumbnails are a **second screenshot at the source video's
-native resolution**, taken at the exact same timestamp as each hash frame,
-purely so the frames are readable and the zoom/slider comparison is
-pixel-accurate. It's a separate `ffmpeg` call with no scale filter at all
-— the 160px frame that actually gets hashed is extracted independently
-and never touches the display path.
-
-## Adding videos
-
-Use the button or drop files anywhere on the page. Each row has a Remove
-button. Two videos are processed at a time; the rest wait with a "Queued"
-status.
-
-## Zooming in
-
-Everything in the app is clickable:
-
-- **Click a frame** in any filmstrip to open a draggable before/after slider
-  against another loaded video at the same sample index — drag the handle
-  (or use the invisible full-width range track under it) to wipe between
-  the two. In the desktop app both sides are extracted at the **source
-  video's native resolution** (a separate, unscaled ffmpeg call at the same
-  timestamp; never a re-extraction of what's already in memory, and never
-  touches the 160px hash path). The web build caps previews at 480px wide
-  to keep browser memory in check. Switch which two videos you're comparing with the
-  Video A / Video B dropdowns, and step through sample indices with the
-  Prev/Next buttons or the ← / → arrow keys, without closing the modal.
-- **Click a collage** to open the same slider, but for the literal
-  160px-tile pixels that get hashed — this is the view to trust if you're
-  debugging a mismatch. Check "Overlay DCT diff contribution" to lay a
-  heatmap over the slider showing which regions of the (downsampled)
-  collage the coefficients that actually flipped bits care about most —
-  see the DCT grid bullet below for what "care about" means here.
-- **Click a DCT grid** to open a bit-level diff: pick any two loaded
-  videos and see three 8×8 grids side by side — video A, a diff grid
-  highlighting exactly which of the 64 coefficients landed on opposite
-  sides of the median (i.e. which bits actually flipped and contributed
-  to the Hamming distance), and video B. The same cells are outlined in
-  red on the A/B grids too, so you can trace a specific frequency
-  coefficient's value on both sides.
-
-**About the collage's DCT overlay:** a DCT coefficient isn't "located" at
-one pixel — each one is a weighted sum over the *entire* 64×64 downsampled
-grid via its own 2D cosine basis function. So the overlay isn't a literal
-"these exact pixels changed" map; it's the magnitude of the flipped
-coefficients' basis functions (weighted by how much each one's value
-actually differs between the two videos), which tells you where the
-brightness *pattern* those specific frequencies respond to is strongest.
-Low-frequency coefficients (near the top-left of the DCT grid) light up
-broad regions; higher-frequency ones light up finer, more localized
-patterns.
-
-## Theme
-
-Colors are lifted directly from Stash's own dark theme
-(`ui/v2.5/src/styles/_theme.scss`) so the tool feels at home next to the
-app it's inspecting: `#202b33` background, `#30404d` cards, `#137cbd`
-primary, `#48aff0` links, and the same success/warning/danger accents.
-
-## What it does
-
-For each video you add, it:
-
-1. Probes duration with `ffprobe` and computes the same 25 sample
-   timestamps Stash does (`offset = 0.05 * duration`,
-   `step = 0.9 * duration / 25`).
-2. Extracts each frame with the _exact same ffmpeg invocation_ Stash uses
-   (`-ss T -i file -frames:v 1 -vf scale=160:-2 -c:v bmp`), shown as a
-   filmstrip.
-3. Assembles the 5×5 collage (montage) exactly as Stash's
-   `combineImages` does.
-4. Runs the perceptual hash algorithm (`goimagehash.PerceptionHash`) —
-   64×64 anti-aliased resize → grayscale → top-left 8×8 DCT-II block →
-   median threshold → 64-bit hash — and shows the DCT coefficient heatmap
-   and resulting bits.
-5. Lets you compare hashes across multiple loaded videos (Hamming
-   distance matrix) or paste in a hash you already have from a real Stash
-   instance to check for an exact match.
-
-Run `node tools/self-test.js <video> [expectedHash]` to do the same thing
-headlessly from the command line. To check against everything a running
-Stash instance has hashed in one go:
+Point `stash-check` at Stash's own binaries to rule out ffmpeg differences:
 
 ```
 FFMPEG_PATH=/path/to/stash/ffmpeg FFPROBE_PATH=/path/to/stash/ffprobe \
   node tools/stash-check.js --url http://localhost:9999/graphql
 ```
 
-It asks Stash (GraphQL) for every file with a stored phash, runs the
-pipeline on each, and prints the Hamming distance per file; a non-zero exit
-means at least one mismatch. Pointing `FFMPEG_PATH`/`FFPROBE_PATH` at the
-binaries Stash itself uses takes ffmpeg-version differences out of the
-comparison.
+### Releases
 
-The two UIs have the same kind of check, driven through the Chrome
-DevTools Protocol: `node tools/ui-check.js <video> [expectedHash]` serves
-`web/dist` (run `pnpm run web:build` first) to a headless Chromium (set
-`CHROME=/path/to/chromium` if it isn't on `PATH`) and runs the real
-ffmpeg.wasm pipeline in the page; `node tools/ui-check.js --electron
-<video> [expectedHash]` launches the actual Electron app (under
-`xvfb-run` when there is no display) and hands it the file. Both wait for
-the hash card, feed the int64 form back into the compare box, and report.
+Pushing a `v*` tag builds a Linux AppImage, a Windows portable `.exe`, and macOS `.zip`s for both architectures, and attaches them to a draft
+GitHub release. Every push to `main` that touches the web build or the shared files redeploys the browser version to GitHub Pages.
 
-## Fidelity notes — read this before trusting a "match"
-
-This is a clean-room JavaScript port, not a recompilation of Stash's Go
-code, so it's honest to separate what's verified from what's inferred.
-Every stage in `shared/phash-core.js` has a `CONFIDENCE` comment; summary:
-
-| Stage                   | Confidence | Why                                                                                                                                                                                                                                                                                                       |
-| ----------------------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Probed duration         | High       | `ffprobe` format duration, then rounded to two decimals exactly as `pkg/ffmpeg/ffprobe.go` does (`math.Round(d*100)/100`) before it ever reaches the timestamp math. This rounding matters: on synthetic clips it moves 14–28 of the 64 bits, and it was verified against a live Stash instance.       |
-| Sample timestamps       | High       | Read directly from `phash.go` source (`offset = 0.05·d`, `step = 0.9·d/25`) and fed the rounded duration above.                                                                                                                                                                                          |
-| ffmpeg frame extraction | High       | Literal port of `transcoder.ScreenshotTime` + `ScreenshotOutputTypeBMP` (`-ss` before `-i`, `-frames:v 1`, `-vf scale=160:-2`, `-c:v bmp -f rawvideo`), including `phash.go`'s fallback to accurate seeking (`-ss` after `-i`) for the rest of a video once a fast seek fails. Decode/scale math is whatever the ffmpeg build in use does — the app shows which one that is in its header. |
-| Montage assembly        | High       | Simple pixel copy, matches `imaging.New` + `imaging.Paste` (no blending, no compression) — confirmed against `disintegration/imaging`'s actual `tools.go` source.                                                                                                                                        |
-| 64×64 resize            | **High**   | Line-for-line port of `nfnt/resize`'s actual fixed-point Bilinear path (`resize.go`/`filters.go`/`converter.go`), including int16 weight quantization, truncating (not rounded) integer division, and edge-clamp behavior — not a floating-point approximation of it.                                    |
-| Grayscale               | High       | Verified against `transforms/pixels.go`: reduces to plain `0.299R + 0.587G + 0.114B` on the resize's exact 8-bit output.                                                                                                                                                                                  |
-| DCT-II                  | High       | Line-for-line port of `transforms/static.go`'s `forwardDCT64`/`32`/`16`/`8`/`4` (Lee's recursive algorithm) and its exact constant tables, not a mathematically-equivalent-but-differently-ordered re-derivation.                                                                                        |
-| Median + bit packing    | High       | Read directly from `hashcompute.go` and `etcs/utils.go`: median is the average of the two middle values of the 64 DCT coefficients (`quickSelectMedian`'s even-length branch), and `if p > median { leftShiftSet(64-idx-1) }`.                                                                          |
-
-**This is cross-checked against the real upstream Go libraries on every
-test run, not just read from source.** `pnpm test` hashes a set of
-deterministic synthetic images (uniform noise at several sizes and aspect
-ratios, solid colours, gradients, tiled montages) plus a real collage
-exported from a video, and compares each result with
-`test/fixtures/expected.json`, which was produced by
-`goimagehash.PerceptionHash` itself via `tools/go-reference` with the
-library versions pinned to Stash's `go.mod`. All cases match bit-for-bit.
-Building that comparison originally caught two real bugs, not just
-approximation gaps:
-
-- The 64×64 resize previously re-normalized filter weights to sum to
-  exactly 1.0 in floating point, whereas `nfnt/resize` quantizes weights
-  to `int16` and divides by their *actual* (possibly not-quite-256)
-  quantized sum — different final byte values on some pixels.
-- The DCT previously used a direct-sum re-derivation of the DCT-II math
-  that's mathematically equivalent to Lee's recursive algorithm but not
-  operation-for-operation identical, so it could round differently on
-  values that land very close together — enough, on adversarial random
-  noise, to flip which side of the median threshold a coefficient landed
-  on.
-
-Both are now literal ports of the upstream algorithms rather than
-reimplementations from the general concept, so there's no remaining
-"medium confidence" stage — every stage's code takes the same path to the
-same bits as the Go original, not merely a mathematically-equivalent one.
-
-If you want to re-run this verification yourself (e.g. after touching
-`shared/phash-core.js`, or against your own video's montage rather than
-synthetic test images), the included `tools/go-reference/` program uses
-the real `goimagehash` + `nfnt/resize` libraries directly:
+### Layout
 
 ```
-cd tools/go-reference
-go run . /path/to/exported-montage.png
-```
-
-Its `go.mod` is pinned to the exact library versions in Stash's own
-`go.mod`. The same program generates `test/fixtures/expected.json`, the
-golden hashes that `pnpm test` checks the JS port against on every run:
-
-```
-node test/fixtures/generate.js /tmp/fixtures
-cd tools/go-reference && go run . /tmp/fixtures/*.png > ../../test/fixtures/expected.json
-```
-
-Export a collage from the app with the "Save collage as PNG…" button, run
-it through the Go reference tool, and compare against what the app shows.
-Note this is purely an optional development/verification aid — nothing in
-the shipped app (desktop or web) runs or depends on Go at any point.
-
-You can also point `tools/self-test.js` at a video whose real Stash phash
-you already know, and it'll print the Hamming distance for you — 0 means
-an exact bit-for-bit match.
-
-## Why duration matters so much
-
-All 25 timestamps are a linear function of the probed duration. If this
-app's ffprobe reports even a slightly different duration than Stash's did
-at generation time (different ffmpeg build, container edge case,
-variable-frame-rate weirdness), every sample timestamp shifts, and for
-short clips that's often enough to land on a different side of a scene
-cut — which is exactly the sensitivity this tool is meant to make
-visible. Check the "Duration" line the app prints against what Stash
-shows for the same file if a hash mismatch looks larger than resize
-rounding alone would explain.
-
-## Releases and the web build
-
-This repo builds two things from one codebase:
-
-- **Desktop app** — push a tag like `v0.2.0` and
-  `.github/workflows/release.yml` builds Linux/macOS/Windows
-  distributables (electron-builder) and attaches them to a GitHub
-  Release automatically. All three are portable, single-download
-  formats — no installer wizard, no admin rights, no system-wide
-  registration:
-  - **Linux**: `.AppImage` — one executable file, `chmod +x` and run.
-  - **Windows**: `.exe` (electron-builder's `portable` NSIS target) —
-    one executable, unpacks to a temp dir at launch, no install step.
-  - **macOS**: `.zip` containing the `.app` bundle — unzip and run; no
-    `.dmg` drag-to-Applications step. (macOS apps are inherently a
-    folder, not a true single file, but this skips the installer UX;
-    it'll also be unsigned/unnotarized, so first launch needs
-    right-click → Open, or `xattr -c` to clear the quarantine flag.)
-    Packaged builds bundle `ffmpeg-static` /
-    `ffprobe-static` (optional package dependencies, see below) so end users
-    don't need ffmpeg installed at all.
-- **Web build** — every push to `main` that touches `web/` or `shared/`
-  runs `.github/workflows/pages.yml`, which builds `web/dist` and
-  deploys it to GitHub Pages. It's the exact same tool running in the
-  browser via [ffmpeg.wasm](https://github.com/ffmpegwasm/ffmpeg.wasm)
-  instead of a native ffmpeg binary — no server, no upload, everything
-  still runs locally in the visitor's browser.
-
-**Why this can't silently drift into two different tools:** `shared/phash-core.js`
-and `shared/bmp.js` are the _only_ copies of the hashing algorithm in the
-repo. The Electron app `require()`s them directly; the web build copies
-the literal same files into `web/dist/shared/` at build time (see
-`web/build.mjs`) and loads them as `<script>` tags (they're written
-UMD-style — `module.exports` in Node, `window.X` in the browser). A bug
-fix or algorithm change only has to happen once.
-
-To enable Pages: repo Settings → Pages → Source → "GitHub Actions" (one-time
-setup). To cut a desktop release: `git tag v0.2.0 && git push --tags`.
-
-### Bundled ffmpeg for packaged releases
-
-`ffmpeg-static` / `ffprobe-static` are listed as `optionalDependencies`
-specifically so environments that don't want them (Nix, most notably —
-see the flake's `FFMPEG_PATH`/`FFPROBE_PATH` env vars, which take
-priority and skip these packages entirely) can omit them cleanly with
-`pnpm install --no-optional`. `src/ffmpeg-extract.js` resolves the
-actual binary to run in this order: `FFMPEG_PATH`/`FFPROBE_PATH` env vars
-→ these bundled packages → `ffmpeg`/`ffprobe` on `PATH`.
-
-### What has actually been verified
-
-- `pnpm test`: golden hashes against the pinned Go libraries, BMP decoder,
-  pipeline seek-fallback policy, hash input parsing, and a parse check of
-  the browser-only files. Runs in both GitHub workflows.
-- `tools/stash-check.js` against a live Stash dev instance: every hashed
-  library file matches bit-for-bit, both with Stash's own ffmpeg 6.1
-  binary and with ffmpeg 8.1.1. The library includes synthetic clips whose
-  every frame differs, chosen so the duration-rounding rule flips 14–28
-  bits if it is wrong.
-- `tools/ui-check.js` in both modes: the browser build (ffmpeg.wasm in a
-  headless Chromium) and the real Electron app (under Xvfb) load a video,
-  render 25 frames, produce the expected hash, accept the int64 form in
-  the compare box, and clean up on Remove.
-- A Linux AppImage built with electron-builder.
-
-Not exercised locally: the Windows and macOS release targets (built
-natively on GitHub runners by `release.yml`).
-
-## Project layout
-
-```
-main.js                    Electron main process (runs the pipeline, IPC)
-preload.js                 Context-isolated IPC bridge
-flake.nix                  Nix devShell (NixOS-friendly Electron + ffmpeg + go)
-shared/                    Loaded by both builds (UMD: require() in Node, globals in the browser)
-  phash-core.js            THE algorithm: duration rounding, timestamps, montage, resize, DCT, hashing
-  pipeline-core.js         Stage orchestration + slow-seek fallback, bound to a backend by deps
-  bmp.js                   Minimal BMP decoder
-  hash-format.js           hex / int64 parsing for typed-in hashes
+main.js / preload.js       Electron main process and IPC bridge
+shared/
+  phash-core.js            The algorithm
+  pipeline-core.js         Stage orchestration, bound to a backend by both builds
+  bmp.js                   Tiny BMP decoder for ffmpeg's output
+  hash-format.js           hex / int64 parsing
 src/
-  ffmpeg-extract.js        Native ffprobe/ffmpeg invocations + binary resolution
+  ffmpeg-extract.js        Native ffmpeg/ffprobe calls
   pipeline.js              Node binding of pipeline-core
-  index.html / renderer.js / styles.css   The UI (renderer.js and styles.css are shared with web/)
+  index.html, renderer.js, styles.css   The UI (renderer and styles are shared with web/)
 web/
-  index.html               Browser shell
-  browser-api.js           ffmpeg.wasm binding of pipeline-core, exposes window.phashAPI
-  build.mjs                Assembles web/dist for GitHub Pages
-test/                      node --test suite; fixtures/ has the Go-generated golden hashes
-tools/
-  self-test.js             Headless CLI: hash one video, optionally compare
-  stash-check.js           Hash everything a live Stash instance has, compare per file
-  ui-check.js              Drive the web build or the Electron app end to end via CDP
-  go-reference/            Real goimagehash/nfnt-resize reference (pinned to Stash's versions)
-.github/workflows/
-  release.yml              Tag push -> multi-platform Electron build -> GitHub Release
-  pages.yml                Push to main -> build web/ -> deploy to GitHub Pages
+  browser-api.js           ffmpeg.wasm binding of pipeline-core
+  build.mjs                Assembles web/dist
+test/                      Test suite and Go-generated golden hashes
+tools/                     self-test, stash-check, ui-check, go-reference
 ```

@@ -15,12 +15,9 @@ importers:
         specifier: ^26.0.0
         version: 26.15.3(electron-builder-squirrel-windows@26.15.3)
     optionalDependencies:
-      ffmpeg-static:
-        specifier: ^5.2.0
-        version: 5.3.0
-      ffprobe-static:
-        specifier: ^3.1.0
-        version: 3.1.0
+      ffmpeg-ffprobe-static:
+        specifier: 6.1.2-rc.1
+        version: 6.1.2-rc.1
 
   web:
     dependencies:
@@ -492,12 +489,9 @@ packages:
       picomatch:
         optional: true
 
-  ffmpeg-static@5.3.0:
-    resolution: {integrity: sha512-H+K6sW6TiIX6VGend0KQwthe+kaceeH/luE8dIZyOP35ik7ahYojDuqlTV1bOrtEwl01sy2HFNGQfi5IDJvotg==}
-    engines: {node: '>=16'}
-
-  ffprobe-static@3.1.0:
-    resolution: {integrity: sha512-Dvpa9uhVMOYivhHKWLGDoa512J751qN1WZAIO+Xw4L/mrUSPxS4DApzSUDbCFE/LUq2+xYnznEahTd63AqBSpA==}
+  ffmpeg-ffprobe-static@6.1.2-rc.1:
+    resolution: {integrity: sha512-zHHGmR76ebnto/TU4qGTnQPqBBKVLTalJG6JdzsZujd9CWybojK4lNzW51154bItUEf12WHiHzSBmvkEr+VIXg==}
+    engines: {node: '>=10'}
 
   filelist@1.0.6:
     resolution: {integrity: sha512-5giy2PkLYY1cP39p17Ech+2xlpTRL9HLspOfEgm0L6CwBXBTgsK5ou0JtzYuepxkaQ/tvhCFIJ5uXo0OrM2DxA==}
@@ -1723,7 +1717,7 @@ snapshots:
     optionalDependencies:
       picomatch: 4.0.7
 
-  ffmpeg-static@5.3.0:
+  ffmpeg-ffprobe-static@6.1.2-rc.1:
     dependencies:
       '@derhuerst/http-basic': 8.2.4
       env-paths: 2.2.1
@@ -1731,9 +1725,6 @@ snapshots:
       progress: 2.0.3
     transitivePeerDependencies:
       - supports-color
-    optional: true
-
-  ffprobe-static@3.1.0:
     optional: true
 
   filelist@1.0.6:
